@@ -1,0 +1,58 @@
+{
+  "sequence_root": "D:\\TorWIC\\TorWIC SLAM Dataset\\Jun. 15, 2022\\Aisle_CCW_Run_1\\Aisle_CCW_Run_1",
+  "calibration_path": "D:\\TorWIC\\TorWIC SLAM Dataset\\Jun. 15, 2022\\Aisle_CCW_Run_1\\Aisle_CCW_Run_1\\calibrations.txt",
+  "num_frames": 1136,
+  "time_range_sec": [
+    0.05591297149658203,
+    113.5556092262268
+  ],
+  "duration_sec": 113.49969625473022,
+  "average_frame_rate_hz": 10.000026761769396,
+  "imu_frequency_hz": {
+    "left": 205.96660773914752,
+    "right": 206.43291662565213
+  },
+  "lidar_analysis_frame_count": 9,
+  "lidar_point_count": {
+    "min": 262144.0,
+    "max": 262144.0,
+    "mean": 262144.0,
+    "median": 262144.0
+  },
+  "lidar_xyz_min": [
+    -52.839820861816406,
+    -42.073360443115234,
+    -115.62158203125
+  ],
+  "lidar_xyz_max": [
+    40.577213287353516,
+    103.18536376953125,
+    9.81218433380127
+  ],
+  "trajectory_position_min": [
+    -0.8172257580617344,
+    -15.96230585551328,
+    0.16903378624330118
+  ],
+  "trajectory_position_max": [
+    28.880978969246346,
+    -0.029561511729704143,
+    0.2319459486943117
+  ],
+  "yaw_range_rad": [
+    -3.1413356313850564,
+    3.1415217938917235
+  ],
+  "relative_translation_m": {
+    "min": 0.00018275340631484968,
+    "max": 0.11623222312328696,
+    "mean": 0.07140180313682616,
+    "median": 0.08713098796267711
+  },
+  "relative_yaw_rad": {
+    "min": -0.05848493748160388,
+    "max": 0.05022725701053776,
+    "mean": 4.079028516897306e-05,
+    "median": 0.00017833698996971847
+  }
+}

@@ -1,0 +1,12 @@
+sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+use_undistort: false
+image_resize: null
+depth_scale: null
+imu_time_window_sec: 0.1
+cache_dir: "./cache"
+load_images: false
+load_depth: false
+load_lidar: false
+validate_timestamps: true
+timestamp_tolerance_sec: 1.0e-6

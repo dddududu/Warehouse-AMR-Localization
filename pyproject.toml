@@ -1,0 +1,40 @@
+[project]
+name = "torwic-coarse"
+version = "0.1.0"
+description = "TorWIC LiDAR coarse retrieval pipeline"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "numpy>=2.1.0",
+  "pillow>=11.0.0",
+  "pyyaml>=6.0.2",
+  "opencv-python-headless>=4.10.0.84",
+  "torch>=2.6.0",
+  "torchvision>=0.21.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "analysis",
+  "calibration",
+  "dataset_io",
+  "geometry",
+  "losses",
+  "models",
+  "preprocess",
+  "retrieval",
+  "trainers",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

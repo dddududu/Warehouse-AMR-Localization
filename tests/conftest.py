@@ -7,6 +7,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from runtime_compat import ensure_runtime_compatibility
+
+ensure_runtime_compatibility()
+
 
 CALIBRATION_TEXT = """# Sensor Calibration
 Camera1.parent_frame_id = "os_sensor"
@@ -145,14 +149,25 @@ def synthetic_dataset(tmp_path: Path) -> dict[str, Path]:
     for frame_idx in range(3):
         rgb = np.full((4, 6, 3), frame_idx * 40, dtype=np.uint8)
         depth = np.full((4, 6), 1000 + frame_idx, dtype=np.uint16)
-        points = np.array(
-            [
-                [frame_idx + 0.0, 0.0, 1.0],
-                [frame_idx + 1.0, 1.0, 2.0],
-                [frame_idx + 2.0, -1.0, 3.0],
-            ],
-            dtype=np.float32,
-        )
+        if frame_idx == 0:
+            points = np.array(
+                [
+                    [-9.5, -9.5, 1.0],
+                    [0.0, 0.0, 2.0],
+                    [9.4, 9.3, 3.0],
+                    [-5.0, 4.0, 1.5],
+                ],
+                dtype=np.float32,
+            )
+        else:
+            points = np.array(
+                [
+                    [frame_idx + 0.0, 0.0, 1.0],
+                    [frame_idx + 1.0, 1.0, 2.0],
+                    [frame_idx + 2.0, -1.0, 3.0],
+                ],
+                dtype=np.float32,
+            )
         _write_png(root / "image_left" / f"{frame_idx:06d}.png", rgb)
         _write_png(root / "image_right" / f"{frame_idx:06d}.png", rgb + 1)
         _write_png(root / "depth_left" / f"{frame_idx:06d}.png", depth)
@@ -161,14 +176,18 @@ def synthetic_dataset(tmp_path: Path) -> dict[str, Path]:
 
     map_xyz = np.array(
         [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 2.0, 0.0],
-            [0.0, 0.0, 3.0],
+            [-10.0, -10.0, 1.0],
+            [-10.0, 9.9, 1.0],
+            [9.9, -10.0, 1.0],
+            [9.9, 9.9, 1.0],
+            [-9.5, -9.5, 1.0],
+            [0.0, 0.0, 2.0],
+            [9.4, 9.3, 3.0],
+            [-5.0, 4.0, 1.5],
         ],
         dtype=np.float32,
     )
-    map_normals = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float32), (4, 1))
+    map_normals = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float32), (map_xyz.shape[0], 1))
     _write_ply(root / "groundtruth_map.ply", map_xyz, map_normals)
 
     return {
@@ -176,4 +195,3 @@ def synthetic_dataset(tmp_path: Path) -> dict[str, Path]:
         "calibration_path": calibration_path,
         "map_path": root / "groundtruth_map.ply",
     }
-

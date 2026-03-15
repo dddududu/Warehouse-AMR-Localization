@@ -25,7 +25,7 @@ def test_analysis_scripts_emit_reports(synthetic_dataset, tmp_path) -> None:
     params = recommend_parameters(sequence_report, map_report)
 
     assert sequence_report["num_frames"] == 3
-    assert map_report["point_count"] == 4
+    assert map_report["point_count"] == 8
     assert "bev_range_candidates_xy_m" in params
     assert json.loads(sequence_report_path.read_text(encoding="utf-8"))["num_frames"] == 3
     assert json.loads(map_report_path.read_text(encoding="utf-8"))["has_normals"] is True

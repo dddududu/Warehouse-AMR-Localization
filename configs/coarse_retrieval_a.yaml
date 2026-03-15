@@ -1,0 +1,23 @@
+sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+map_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/groundtruth_map.ply"
+crop_x_min: -10.0
+crop_x_max: 10.0
+crop_y_min: -10.0
+crop_y_max: 10.0
+crop_z_min: 0.13
+crop_z_max: 4.73
+bev_resolution: 0.1
+bev_size_xy_m: 20.0
+patch_size_m: 20.0
+patch_stride_m: 5.0
+descriptor_dim: 256
+topk: 8
+cache_dir: "./cache/coarse_retrieval"
+num_negative_patches: 4
+train_batch_size: 2
+train_epochs: 1
+learning_rate: 0.001
+temperature: 0.07
+model_seed: 0
+device: "cpu"

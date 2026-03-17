@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import struct
 from pathlib import Path
 
@@ -194,4 +195,21 @@ def synthetic_dataset(tmp_path: Path) -> dict[str, Path]:
         "sequence_root": root,
         "calibration_path": calibration_path,
         "map_path": root / "groundtruth_map.ply",
+    }
+
+
+@pytest.fixture()
+def synthetic_multi_sequence_dataset(tmp_path: Path, synthetic_dataset: dict[str, Path]) -> dict[str, object]:
+    parent_root = tmp_path / "multi_sequences"
+    parent_root.mkdir(parents=True, exist_ok=True)
+    sequence_names = ["Seq_A", "Seq_B", "Seq_C"]
+    for sequence_name in sequence_names:
+        outer_dir = parent_root / sequence_name
+        inner_dir = outer_dir / sequence_name
+        outer_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(synthetic_dataset["sequence_root"], inner_dir)
+    return {
+        "dataset_parent_root": parent_root,
+        "sequence_names": sequence_names,
+        "val_sequence_names": ["Seq_C"],
     }

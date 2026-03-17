@@ -28,9 +28,10 @@ def test_train_script_runs_on_minimal_sample(synthetic_dataset, tmp_path) -> Non
             "cache_dir": str(tmp_path / "cache"),
             "train_batch_size": 1,
             "train_epochs": 1,
-            "num_negative_patches": 0,
+            "num_hard_negative_patches": 0,
+            "num_random_negative_patches": 0,
+            "val_ratio": 0.0,
         },
         output_checkpoint=tmp_path / "model.pt",
     )
     assert result["checkpoint_path"].endswith("model.pt")
-

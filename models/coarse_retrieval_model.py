@@ -11,7 +11,7 @@ class CoarseRetrievalModel(nn.Module):
     def __init__(self, descriptor_dim: int = 256, init_seed: int = 0) -> None:
         super().__init__()
         self.query_encoder = CoarseQueryEncoder(descriptor_dim=descriptor_dim, init_seed=init_seed)
-        self.patch_encoder = CoarsePatchEncoder(descriptor_dim=descriptor_dim, init_seed=init_seed)
+        self.patch_encoder = CoarsePatchEncoder(descriptor_dim=descriptor_dim, init_seed=init_seed + 1)
 
     def encode_query(self, query_bev: torch.Tensor) -> torch.Tensor:
         return self.query_encoder(query_bev)

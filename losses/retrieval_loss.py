@@ -20,8 +20,11 @@ class RetrievalInfoNCELoss(nn.Module):
         positive_descriptor: torch.Tensor,
         negative_descriptor: torch.Tensor,
     ) -> torch.Tensor:
-        positive_logits = torch.sum(query_descriptor * positive_descriptor, dim=1, keepdim=True)
-        negative_logits = torch.einsum("bd,bnd->bn", query_descriptor, negative_descriptor)
-        logits = torch.cat((positive_logits, negative_logits), dim=1) / self.temperature
-        labels = torch.zeros(query_descriptor.shape[0], dtype=torch.long, device=query_descriptor.device)
+        positive_logits = query_descriptor @ positive_descriptor.T
+        logits = positive_logits
+        if negative_descriptor.numel() > 0:
+            negative_logits = torch.einsum("bd,bnd->bn", query_descriptor, negative_descriptor)
+            logits = torch.cat((positive_logits, negative_logits), dim=1)
+        logits = logits / self.temperature
+        labels = torch.arange(query_descriptor.shape[0], dtype=torch.long, device=query_descriptor.device)
         return F.cross_entropy(logits, labels)

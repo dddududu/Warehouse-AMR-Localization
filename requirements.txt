@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+numpy==2.4.3
+opencv-python-headless==4.13.0.92
+pillow==12.1.1
+pyyaml==6.0.3
+pytest==9.0.2
+torch==2.9.0+cu126
+torchvision==0.24.0+cu126

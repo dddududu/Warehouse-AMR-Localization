@@ -12,13 +12,14 @@
 - Train config: `configs/coarse_retrieval_multiday_finetune_e2.yaml`
 - Eval config: `configs/eval_oct12_aisle_ccw_multiday.yaml`
 - Checkpoint: `outputs/coarse_retrieval_multiday_finetune_e2.pt`
+- Best classifier fusion weight on `Oct. 12 / Aisle_CCW`: `0.5`
 
 ## Metrics on `Oct. 12, 2022 / Aisle_CCW`
 
 | Model | Top1 | Recall@3 | MRR |
 | --- | ---: | ---: | ---: |
 | Baseline `coarse_retrieval_model_v2.pt` | 0.1738 | 0.4033 | 0.3190 |
-| Multi-day fine-tune + classifier fusion (`weight=0.4`) | 0.3268 | 0.6568 | 0.5400 |
+| Multi-day fine-tune + classifier fusion (`weight=0.5`) | 0.3388 | 0.7038 | 0.5518 |
 
 ## Notes
 

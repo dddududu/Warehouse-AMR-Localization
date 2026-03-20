@@ -31,3 +31,8 @@ python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_mult
 ```bash
 python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_multiday.yaml --checkpoint outputs/coarse_retrieval_multiday_best.pt --output-json outputs/eval_oct12_aisle_ccw_multiday.json
 ```
+
+## Best checkpoint
+
+- Repository path: `checkpoints/coarse_retrieval_multiday_finetune_e2_top1_0p3388_r3_0p7038.pt`
+- Matching report: `analysis/multiday_finetune_results.md`

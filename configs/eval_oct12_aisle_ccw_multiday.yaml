@@ -36,4 +36,4 @@ save_best_only: true
 share_query_patch_encoder: false
 use_patch_classification_loss: true
 classification_loss_weight: 0.25
-classifier_score_weight: 0.4
+classifier_score_weight: 0.5

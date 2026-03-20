@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from runtime_compat import ensure_runtime_compatibility
@@ -23,10 +24,15 @@ from preprocess.map_patch_builder import PatchMetadata, choose_gt_patch_id
 from retrieval.config import load_coarse_retrieval_config
 
 
-def load_descriptor_bank(descriptor_bank_path: str | Path) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+def load_descriptor_bank(
+    descriptor_bank_path: str | Path,
+    include_patch_tensors: bool = False,
+) -> tuple[np.ndarray, np.ndarray, list[dict]] | tuple[np.ndarray, np.ndarray, list[dict], np.ndarray]:
     path = Path(descriptor_bank_path)
     bank = np.load(path)
     metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["patch_metadata"]
+    if include_patch_tensors:
+        return bank["descriptor_bank"], bank["patch_ids"], metadata, bank["patch_tensors"]
     return bank["descriptor_bank"], bank["patch_ids"], metadata
 
 
@@ -37,6 +43,118 @@ def _standardize_scores(scores: np.ndarray) -> np.ndarray:
     if std < 1.0e-6:
         return array - mean
     return (array - mean) / std
+
+
+def _resolve_ensemble_config(
+    cfg,
+    checkpoint_path: str | Path | None,
+) -> tuple[list[str], list[float], list[float]]:
+    checkpoint_paths = [str(path) for path in (cfg.ensemble_checkpoint_paths or ([] if checkpoint_path is None else [checkpoint_path]))]
+    if not checkpoint_paths:
+        raise ValueError("At least one checkpoint path is required for retrieval.")
+    model_weights = list(cfg.ensemble_model_weights or [1.0] * len(checkpoint_paths))
+    classifier_score_weights = list(
+        cfg.ensemble_classifier_score_weights or [float(cfg.classifier_score_weight)] * len(checkpoint_paths)
+    )
+    if len(model_weights) != len(checkpoint_paths):
+        raise ValueError("ensemble_model_weights length must match ensemble_checkpoint_paths length.")
+    if len(classifier_score_weights) != len(checkpoint_paths):
+        raise ValueError("ensemble_classifier_score_weights length must match ensemble_checkpoint_paths length.")
+    weight_sum = float(sum(model_weights))
+    if weight_sum <= 0.0:
+        raise ValueError("ensemble_model_weights must sum to a positive value.")
+    normalized_weights = [float(weight) / weight_sum for weight in model_weights]
+    return checkpoint_paths, normalized_weights, classifier_score_weights
+
+
+def _build_retrieval_model(
+    cfg,
+    checkpoint_path: str | Path | None,
+    num_patch_classes: int | None,
+    device: torch.device,
+) -> tuple[CoarseRetrievalModel, dict[str, Any]]:
+    state: dict[str, Any] = {} if checkpoint_path is None else torch.load(checkpoint_path, map_location=device)
+    retrieval_model = CoarseRetrievalModel(
+        descriptor_dim=cfg.descriptor_dim,
+        init_seed=cfg.model_seed,
+        share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
+        num_patch_classes=num_patch_classes if state.get("query_classifier") is not None else None,
+    ).to(device)
+    if state.get("query_encoder") is not None:
+        retrieval_model.query_encoder.load_state_dict(state["query_encoder"])
+    if state.get("patch_encoder") is not None:
+        retrieval_model.patch_encoder.load_state_dict(state["patch_encoder"])
+    if retrieval_model.query_classifier is not None and state.get("query_classifier") is not None:
+        retrieval_model.query_classifier.load_state_dict(state["query_classifier"])
+    retrieval_model.eval()
+    return retrieval_model, state
+
+
+def build_ensemble_specs(
+    cfg,
+    checkpoint_path: str | Path | None,
+    patch_tensors: np.ndarray,
+    device: torch.device,
+) -> list[dict[str, Any]]:
+    checkpoint_paths, model_weights, classifier_score_weights = _resolve_ensemble_config(cfg, checkpoint_path)
+    specs: list[dict[str, Any]] = []
+    for path, model_weight, classifier_score_weight in zip(checkpoint_paths, model_weights, classifier_score_weights):
+        retrieval_model, _ = _build_retrieval_model(
+            cfg,
+            checkpoint_path=path,
+            num_patch_classes=int(patch_tensors.shape[0]),
+            device=device,
+        )
+        descriptors: list[np.ndarray] = []
+        with torch.no_grad():
+            for start in range(0, len(patch_tensors), 16):
+                batch = torch.from_numpy(patch_tensors[start : start + 16]).to(device).float()
+                descriptors.append(retrieval_model.encode_patch(batch).cpu().numpy())
+        specs.append(
+            {
+                "model": retrieval_model,
+                "descriptor_bank": np.concatenate(descriptors, axis=0),
+                "model_weight": float(model_weight),
+                "classifier_score_weight": float(classifier_score_weight),
+            }
+        )
+    return specs
+
+
+def combine_model_scores(
+    score_entries: list[tuple[np.ndarray, np.ndarray, float]],
+) -> tuple[np.ndarray, np.ndarray]:
+    combined_scores = np.zeros_like(score_entries[0][0], dtype=np.float32)
+    best_angles = np.array(score_entries[0][1], copy=True)
+    best_contribution = np.full_like(combined_scores, -np.inf, dtype=np.float32)
+    for scores, angles, model_weight in score_entries:
+        contribution = float(model_weight) * _standardize_scores(scores)
+        combined_scores += contribution
+        improve = contribution > best_contribution
+        best_contribution[improve] = contribution[improve]
+        best_angles[improve] = angles[improve]
+    return combined_scores, best_angles
+
+
+def score_query_bev_with_ensemble(
+    query_bev: np.ndarray,
+    specs: list[dict[str, Any]],
+    rotation_angles_deg: list[float],
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    score_entries: list[tuple[np.ndarray, np.ndarray, float]] = []
+    for spec in specs:
+        scores, best_angles = score_query_bev_against_bank(
+            query_bev=query_bev,
+            encoder=spec["model"].query_encoder,
+            descriptor_bank=spec["descriptor_bank"],
+            rotation_angles_deg=rotation_angles_deg,
+            device=device,
+            classifier=spec["model"].query_classifier,
+            classifier_score_weight=spec["classifier_score_weight"],
+        )
+        score_entries.append((scores, best_angles, spec["model_weight"]))
+    return combine_model_scores(score_entries)
 
 
 def score_query_bev_against_bank(
@@ -77,7 +195,10 @@ def retrieve_topk_for_frame(
     sequence_name: str | None = None,
 ) -> dict:
     cfg = load_coarse_retrieval_config(config)
-    descriptor_bank, patch_ids, metadata = load_descriptor_bank(descriptor_bank_path)
+    descriptor_bank, patch_ids, metadata, patch_tensors = load_descriptor_bank(
+        descriptor_bank_path,
+        include_patch_tensors=True,
+    )
     entry = cfg.resolve_single_sequence_entry(sequence_name=sequence_name, prefer_validation=True)
     single_cfg = load_coarse_retrieval_config(
         {
@@ -112,29 +233,32 @@ def retrieve_topk_for_frame(
     query_bev = points_to_bev(crop_local_lidar_points(points, cropper), bev_config)
 
     device = torch.device(single_cfg.device)
-    state = torch.load(checkpoint_path, map_location=device) if checkpoint_path is not None else None
-    num_patch_classes = int(descriptor_bank.shape[0]) if state and state.get("query_classifier") is not None else None
-    retrieval_model = CoarseRetrievalModel(
-        descriptor_dim=single_cfg.descriptor_dim,
-        init_seed=single_cfg.model_seed,
-        share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
-        num_patch_classes=num_patch_classes,
-    ).to(device)
-    if checkpoint_path is not None:
-        retrieval_model.query_encoder.load_state_dict(state["query_encoder"])
-        if retrieval_model.query_classifier is not None and state.get("query_classifier") is not None:
-            retrieval_model.query_classifier.load_state_dict(state["query_classifier"])
-    retrieval_model.eval()
-
-    scores, best_angles = score_query_bev_against_bank(
-        query_bev=query_bev,
-        encoder=retrieval_model.query_encoder,
-        descriptor_bank=descriptor_bank,
-        rotation_angles_deg=single_cfg.query_rotation_search_angles_deg,
-        device=device,
-        classifier=retrieval_model.query_classifier,
-        classifier_score_weight=single_cfg.classifier_score_weight,
-    )
+    if cfg.ensemble_checkpoint_paths:
+        ensemble_specs = build_ensemble_specs(single_cfg, checkpoint_path=None, patch_tensors=patch_tensors, device=device)
+        scores, best_angles = score_query_bev_with_ensemble(
+            query_bev=query_bev,
+            specs=ensemble_specs,
+            rotation_angles_deg=single_cfg.query_rotation_search_angles_deg,
+            device=device,
+        )
+    else:
+        retrieval_model, state = _build_retrieval_model(
+            single_cfg,
+            checkpoint_path=checkpoint_path,
+            num_patch_classes=int(descriptor_bank.shape[0]),
+            device=device,
+        )
+        if state.get("query_classifier") is None:
+            retrieval_model.query_classifier = None
+        scores, best_angles = score_query_bev_against_bank(
+            query_bev=query_bev,
+            encoder=retrieval_model.query_encoder,
+            descriptor_bank=descriptor_bank,
+            rotation_angles_deg=single_cfg.query_rotation_search_angles_deg,
+            device=device,
+            classifier=retrieval_model.query_classifier,
+            classifier_score_weight=single_cfg.classifier_score_weight,
+        )
     order = np.argsort(scores)[::-1][: single_cfg.topk]
     topk_patch_ids = patch_ids[order].astype(int).tolist()
 

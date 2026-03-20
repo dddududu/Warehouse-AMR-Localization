@@ -53,6 +53,11 @@ class CoarseRetrievalConfig:
     eval_every_epochs: int = 1
     save_best_only: bool = True
     share_query_patch_encoder: bool = False
+    freeze_query_encoder: bool = False
+    freeze_patch_encoder: bool = False
+    ensemble_checkpoint_paths: list[str] | None = None
+    ensemble_model_weights: list[float] | None = None
+    ensemble_classifier_score_weights: list[float] | None = None
     train_random_rotation_deg: float = 0.0
     train_random_xy_shift_cells: int = 0
     train_dropout_prob: float = 0.0

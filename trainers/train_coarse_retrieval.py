@@ -54,6 +54,13 @@ def _load_init_checkpoint(model: CoarseRetrievalModel, checkpoint_path: str | Pa
                 pass
 
 
+def _set_module_trainable(module: torch.nn.Module | None, trainable: bool) -> None:
+    if module is None:
+        return
+    for parameter in module.parameters():
+        parameter.requires_grad = bool(trainable)
+
+
 def _evaluate_recall(model: CoarseRetrievalModel, dataset: CoarseRetrievalDataset, device: torch.device, topk: int) -> dict:
     if len(dataset) == 0:
         return {"num_val_frames": 0, "recall@1": None, "recall@5": None, f"recall@{topk}": None}
@@ -124,8 +131,17 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
     ).to(device)
     if cfg.init_checkpoint_path:
         _load_init_checkpoint(model, cfg.init_checkpoint_path, device=device)
+    _set_module_trainable(model.query_encoder, not cfg.freeze_query_encoder)
+    if model.patch_encoder is model.query_encoder:
+        if cfg.freeze_query_encoder or cfg.freeze_patch_encoder:
+            _set_module_trainable(model.patch_encoder, False)
+    else:
+        _set_module_trainable(model.patch_encoder, not cfg.freeze_patch_encoder)
     criterion = RetrievalInfoNCELoss(temperature=cfg.temperature)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    if not trainable_parameters:
+        raise ValueError("No trainable parameters remain after applying freeze configuration.")
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     scaler = torch.amp.GradScaler(device=device.type, enabled=amp_enabled)
     scheduler = (
         torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.lr_decay_gamma)

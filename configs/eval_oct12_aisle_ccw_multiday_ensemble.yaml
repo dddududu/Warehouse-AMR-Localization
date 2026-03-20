@@ -1,0 +1,48 @@
+sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+map_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/groundtruth_map.ply"
+crop_x_min: -10.0
+crop_x_max: 10.0
+crop_y_min: -10.0
+crop_y_max: 10.0
+crop_z_min: 0.13
+crop_z_max: 4.73
+bev_resolution: 0.1
+bev_size_xy_m: 20.0
+patch_size_m: 20.0
+patch_stride_m: 5.0
+descriptor_dim: 256
+topk: 3
+cache_dir: "./cache/eval_oct12_aisle_ccw_multiday_ensemble"
+align_query_to_gt_yaw_train: true
+use_query_rotation_search: true
+query_rotation_search_step_deg: 30.0
+num_hard_negative_patches: 8
+num_random_negative_patches: 8
+hard_negative_min_distance_m: 5.0
+hard_negative_max_distance_m: 30.0
+train_batch_size: 6
+train_num_workers: 4
+train_epochs: 2
+learning_rate: 0.0002
+weight_decay: 0.0001
+lr_decay_gamma: 0.98
+temperature: 0.07
+model_seed: 0
+device: "cuda"
+use_amp: true
+eval_every_epochs: 1
+save_best_only: true
+share_query_patch_encoder: false
+ensemble_checkpoint_paths:
+  - "checkpoints/coarse_retrieval_multiday_finetune_e2_top1_0p3388_r3_0p7038.pt"
+  - "checkpoints/coarse_retrieval_classifier_head_e2_aux.pt"
+  - "checkpoints/coarse_retrieval_multiday_stage2_e1_aux.pt"
+ensemble_model_weights:
+  - 0.7
+  - 0.1
+  - 0.2
+ensemble_classifier_score_weights:
+  - 0.5
+  - 0.6
+  - 0.65

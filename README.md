@@ -36,3 +36,8 @@ python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_mul
 
 - Repository path: `checkpoints/coarse_retrieval_multiday_finetune_e2_top1_0p3388_r3_0p7038.pt`
 - Matching report: `analysis/multiday_finetune_results.md`
+
+## Best system
+
+- Ensemble eval config: `configs/eval_oct12_aisle_ccw_multiday_ensemble.yaml`
+- Overall best metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.3454`, `Recall@3=0.7421`, `MRR=0.5596`

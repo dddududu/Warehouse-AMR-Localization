@@ -12,16 +12,26 @@ class CoarseRetrievalModel(nn.Module):
         self,
         descriptor_dim: int = 256,
         init_seed: int = 0,
+        backbone_variant: str = "legacy",
         share_query_patch_encoder: bool = False,
         num_patch_classes: int | None = None,
     ) -> None:
         super().__init__()
         self.share_query_patch_encoder = bool(share_query_patch_encoder)
-        self.query_encoder = CoarseQueryEncoder(descriptor_dim=descriptor_dim, init_seed=init_seed)
+        self.backbone_variant = str(backbone_variant)
+        self.query_encoder = CoarseQueryEncoder(
+            descriptor_dim=descriptor_dim,
+            init_seed=init_seed,
+            backbone_variant=self.backbone_variant,
+        )
         self.patch_encoder = (
             self.query_encoder
             if self.share_query_patch_encoder
-            else CoarsePatchEncoder(descriptor_dim=descriptor_dim, init_seed=init_seed + 1)
+            else CoarsePatchEncoder(
+                descriptor_dim=descriptor_dim,
+                init_seed=init_seed + 1,
+                backbone_variant=self.backbone_variant,
+            )
         )
         self.query_classifier = nn.Linear(descriptor_dim, int(num_patch_classes)) if num_patch_classes is not None else None
 

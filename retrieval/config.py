@@ -52,6 +52,7 @@ class CoarseRetrievalConfig:
     val_ratio: float = 0.1
     eval_every_epochs: int = 1
     save_best_only: bool = True
+    backbone_variant: str = "legacy"
     share_query_patch_encoder: bool = False
     freeze_query_encoder: bool = False
     freeze_patch_encoder: bool = False

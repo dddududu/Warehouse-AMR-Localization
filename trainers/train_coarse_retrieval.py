@@ -126,6 +126,7 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
     model = CoarseRetrievalModel(
         descriptor_dim=cfg.descriptor_dim,
         init_seed=cfg.model_seed,
+        backbone_variant=cfg.backbone_variant,
         share_query_patch_encoder=cfg.share_query_patch_encoder,
         num_patch_classes=num_patch_classes,
     ).to(device)

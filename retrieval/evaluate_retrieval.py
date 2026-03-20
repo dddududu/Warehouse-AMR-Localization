@@ -15,7 +15,6 @@ from dataset_io.retrieval_dataset import CoarseRetrievalDataset
 from dataset_io.lidar_loader import load_pcd_xyz
 from dataset_io.sequence_dataset import WarehouseSequenceDataset
 from models.coarse_retrieval_model import CoarseRetrievalModel
-from models.coarse_query_encoder import CoarseQueryEncoder
 from preprocess.bev_builder import BEVConfig, points_to_bev
 from preprocess.local_lidar_cropper import LocalCropConfig, crop_local_lidar_points
 from preprocess.map_patch_builder import PatchMetadata, choose_gt_patch_id
@@ -81,6 +80,7 @@ def evaluate_retrieval(
             model = CoarseRetrievalModel(
                 descriptor_dim=cfg.descriptor_dim,
                 init_seed=cfg.model_seed,
+                backbone_variant=str((state or {}).get("config", {}).get("backbone_variant", cfg.backbone_variant)),
                 share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
                 num_patch_classes=num_patch_classes,
             ).to(device)
@@ -180,14 +180,15 @@ def evaluate_retrieval(
                 device=device,
             )
         else:
+            state = torch.load(checkpoint_path, map_location=device) if checkpoint_path is not None else None
             model = CoarseRetrievalModel(
                 descriptor_dim=cfg.descriptor_dim,
                 init_seed=cfg.model_seed,
+                backbone_variant=str((state or {}).get("config", {}).get("backbone_variant", cfg.backbone_variant)),
                 share_query_patch_encoder=cfg.share_query_patch_encoder,
                 num_patch_classes=num_patch_classes if cfg.classifier_score_weight > 0.0 else None,
             ).to(device)
-            if checkpoint_path is not None:
-                state = torch.load(checkpoint_path, map_location=device)
+            if state is not None:
                 model.query_encoder.load_state_dict(state["query_encoder"])
                 model.patch_encoder.load_state_dict(state["patch_encoder"])
                 if model.query_classifier is not None and state.get("query_classifier") is not None:

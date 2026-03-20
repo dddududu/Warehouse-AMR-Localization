@@ -74,9 +74,11 @@ def _build_retrieval_model(
     device: torch.device,
 ) -> tuple[CoarseRetrievalModel, dict[str, Any]]:
     state: dict[str, Any] = {} if checkpoint_path is None else torch.load(checkpoint_path, map_location=device)
+    state_cfg = state.get("config", {}) if isinstance(state, dict) else {}
     retrieval_model = CoarseRetrievalModel(
         descriptor_dim=cfg.descriptor_dim,
         init_seed=cfg.model_seed,
+        backbone_variant=str(state_cfg.get("backbone_variant", getattr(cfg, "backbone_variant", "legacy"))),
         share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
         num_patch_classes=num_patch_classes if state.get("query_classifier") is not None else None,
     ).to(device)

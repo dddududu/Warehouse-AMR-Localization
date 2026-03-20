@@ -10,6 +10,7 @@ ensure_runtime_compatibility()
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from dataset_io.retrieval_dataset import CoarseRetrievalDataset
@@ -27,6 +28,30 @@ def _build_patch_descriptor_bank(model: CoarseRetrievalModel, patch_tensors: np.
             batch = torch.from_numpy(patch_tensors[start : start + 16]).to(device).float()
             descriptors.append(model.encode_patch(batch).cpu().numpy())
     return np.concatenate(descriptors, axis=0)
+
+
+def _resolve_num_patch_classes(dataset: CoarseRetrievalDataset) -> int | None:
+    patch_counts = {len(resources.patch_tensors) for resources in dataset.sequence_resources}
+    if not patch_counts:
+        return None
+    if len(patch_counts) != 1:
+        raise ValueError("Patch classification requires all sequences to share the same patch count.")
+    return int(next(iter(patch_counts)))
+
+
+def _load_init_checkpoint(model: CoarseRetrievalModel, checkpoint_path: str | Path, device: torch.device) -> None:
+    state = torch.load(checkpoint_path, map_location=device)
+    if state.get("query_encoder") is not None:
+        model.query_encoder.load_state_dict(state["query_encoder"], strict=False)
+    if state.get("patch_encoder") is not None:
+        model.patch_encoder.load_state_dict(state["patch_encoder"], strict=False)
+    if model.query_classifier is not None and state.get("query_classifier") is not None:
+        classifier_state = state["query_classifier"]
+        if classifier_state is not None:
+            try:
+                model.query_classifier.load_state_dict(classifier_state, strict=False)
+            except RuntimeError:
+                pass
 
 
 def _evaluate_recall(model: CoarseRetrievalModel, dataset: CoarseRetrievalDataset, device: torch.device, topk: int) -> dict:
@@ -52,6 +77,8 @@ def _evaluate_recall(model: CoarseRetrievalModel, dataset: CoarseRetrievalDatase
             descriptor_bank=per_sequence_descriptor_bank[sequence_name],
             rotation_angles_deg=dataset.config.query_rotation_search_angles_deg,
             device=device,
+            classifier=model.query_classifier,
+            classifier_score_weight=dataset.config.classifier_score_weight,
         )
         ranking = np.argsort(scores)[::-1]
         if gt_patch_id == int(ranking[0]):
@@ -75,12 +102,36 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
     train_entries, val_entries = cfg.split_sequence_entries()
     train_dataset = CoarseRetrievalDataset(cfg, sequence_entries=train_entries, align_query_to_gt_yaw=True)
     val_dataset = CoarseRetrievalDataset(cfg, sequence_entries=val_entries, align_query_to_gt_yaw=False)
-    dataloader = DataLoader(train_dataset, batch_size=cfg.train_batch_size, shuffle=True)
     device = torch.device(cfg.device)
+    amp_enabled = bool(cfg.use_amp and device.type == "cuda")
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=cfg.train_batch_size,
+        shuffle=True,
+        num_workers=max(0, int(cfg.train_num_workers)),
+        pin_memory=device.type == "cuda",
+        persistent_workers=bool(int(cfg.train_num_workers) > 0),
+    )
 
-    model = CoarseRetrievalModel(descriptor_dim=cfg.descriptor_dim, init_seed=cfg.model_seed).to(device)
+    use_classifier = bool(cfg.use_patch_classification_loss or cfg.classifier_score_weight > 0.0)
+    num_patch_classes = _resolve_num_patch_classes(train_dataset) if use_classifier else None
+
+    model = CoarseRetrievalModel(
+        descriptor_dim=cfg.descriptor_dim,
+        init_seed=cfg.model_seed,
+        share_query_patch_encoder=cfg.share_query_patch_encoder,
+        num_patch_classes=num_patch_classes,
+    ).to(device)
+    if cfg.init_checkpoint_path:
+        _load_init_checkpoint(model, cfg.init_checkpoint_path, device=device)
     criterion = RetrievalInfoNCELoss(temperature=cfg.temperature)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+    scaler = torch.amp.GradScaler(device=device.type, enabled=amp_enabled)
+    scheduler = (
+        torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.lr_decay_gamma)
+        if cfg.lr_decay_gamma < 0.999999
+        else None
+    )
 
     history: list[float] = []
     validation_history: list[dict] = []
@@ -88,40 +139,61 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
     best_state: dict | None = None
     for epoch_idx in range(cfg.train_epochs):
         model.train()
+        epoch_losses: list[float] = []
         for batch in dataloader:
             query_bev = batch["query_bev"].to(device).float()
             positive_patch_bev = batch["positive_patch_bev"].to(device).float()
             negative_patch_bevs = batch["negative_patch_bevs"].to(device).float()
+            gt_patch_id = batch["gt_patch_id"].to(device).long()
 
-            outputs = model(query_bev, positive_patch_bev, negative_patch_bevs)
-            loss = criterion(
-                outputs["query_descriptor"],
-                outputs["positive_descriptor"],
-                outputs["negative_descriptor"],
-            )
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+                outputs = model(query_bev, positive_patch_bev, negative_patch_bevs)
+                loss = criterion(
+                    outputs["query_descriptor"],
+                    outputs["positive_descriptor"],
+                    outputs["negative_descriptor"],
+                )
+                if model.query_classifier is not None and cfg.classification_loss_weight > 0.0:
+                    classification_loss = F.cross_entropy(outputs["query_logits"], gt_patch_id)
+                    loss = loss + cfg.classification_loss_weight * classification_loss
+            optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             history.append(float(loss.item()))
+            epoch_losses.append(float(loss.item()))
+
+        if scheduler is not None:
+            scheduler.step()
+
+        epoch_report: dict[str, object] = {
+            "epoch": epoch_idx + 1,
+            "train_loss_mean": float(np.mean(epoch_losses)) if epoch_losses else None,
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        }
 
         if (epoch_idx + 1) % cfg.eval_every_epochs == 0:
             metrics = _evaluate_recall(model, val_dataset, device=device, topk=cfg.topk)
             metrics["epoch"] = epoch_idx + 1
             validation_history.append(metrics)
+            epoch_report["validation"] = metrics
             recall_at_1 = metrics["recall@1"] or 0.0
             if recall_at_1 >= best_metric:
                 best_metric = recall_at_1
                 best_state = {
                     "query_encoder": model.query_encoder.state_dict(),
                     "patch_encoder": model.patch_encoder.state_dict(),
+                    "query_classifier": model.query_classifier.state_dict() if model.query_classifier is not None else None,
                     "history": history.copy(),
                     "validation_history": validation_history.copy(),
                     "config": cfg.__dict__,
                 }
+        print(json.dumps(epoch_report))
 
     final_state = {
         "query_encoder": model.query_encoder.state_dict(),
         "patch_encoder": model.patch_encoder.state_dict(),
+        "query_classifier": model.query_classifier.state_dict() if model.query_classifier is not None else None,
         "history": history,
         "validation_history": validation_history,
         "config": cfg.__dict__,

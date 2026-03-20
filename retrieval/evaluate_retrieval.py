@@ -61,11 +61,19 @@ def evaluate_retrieval(
             y_max=cfg.crop_y_max,
             resolution=cfg.bev_resolution,
         )
-        encoder = CoarseQueryEncoder(descriptor_dim=cfg.descriptor_dim, init_seed=cfg.model_seed).to(device)
+        state = torch.load(checkpoint_path, map_location=device) if checkpoint_path is not None else None
+        num_patch_classes = int(descriptor_bank.shape[0]) if state and state.get("query_classifier") is not None else None
+        model = CoarseRetrievalModel(
+            descriptor_dim=cfg.descriptor_dim,
+            init_seed=cfg.model_seed,
+            share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
+            num_patch_classes=num_patch_classes,
+        ).to(device)
         if checkpoint_path is not None:
-            state = torch.load(checkpoint_path, map_location=device)
-            encoder.load_state_dict(state["query_encoder"])
-        encoder.eval()
+            model.query_encoder.load_state_dict(state["query_encoder"])
+            if model.query_classifier is not None and state.get("query_classifier") is not None:
+                model.query_classifier.load_state_dict(state["query_classifier"])
+        model.eval()
 
         last_frame = len(dataset) if num_frames is None else min(len(dataset), frame_start + num_frames)
         frame_indices = list(range(frame_start, last_frame, max(1, int(frame_stride))))
@@ -80,10 +88,12 @@ def evaluate_retrieval(
             query_bev = points_to_bev(crop_local_lidar_points(points, cropper), bev_config)
             scores, best_angles = score_query_bev_against_bank(
                 query_bev=query_bev,
-                encoder=encoder,
+                encoder=model.query_encoder,
                 descriptor_bank=descriptor_bank,
                 rotation_angles_deg=cfg.query_rotation_search_angles_deg,
                 device=device,
+                classifier=model.query_classifier,
+                classifier_score_weight=cfg.classifier_score_weight,
             )
             ranking = np.argsort(scores)[::-1]
             topk_order = ranking[: cfg.topk]
@@ -126,14 +136,22 @@ def evaluate_retrieval(
             "details": details,
         }
     else:
-        model = CoarseRetrievalModel(descriptor_dim=cfg.descriptor_dim, init_seed=cfg.model_seed).to(device)
+        dataset = CoarseRetrievalDataset(cfg, sequence_entries=sequence_entries, align_query_to_gt_yaw=False)
+        patch_counts = {len(resources.patch_tensors) for resources in dataset.sequence_resources}
+        num_patch_classes = int(next(iter(patch_counts))) if len(patch_counts) == 1 else None
+        model = CoarseRetrievalModel(
+            descriptor_dim=cfg.descriptor_dim,
+            init_seed=cfg.model_seed,
+            share_query_patch_encoder=cfg.share_query_patch_encoder,
+            num_patch_classes=num_patch_classes if cfg.classifier_score_weight > 0.0 else None,
+        ).to(device)
         if checkpoint_path is not None:
             state = torch.load(checkpoint_path, map_location=device)
             model.query_encoder.load_state_dict(state["query_encoder"])
             model.patch_encoder.load_state_dict(state["patch_encoder"])
+            if model.query_classifier is not None and state.get("query_classifier") is not None:
+                model.query_classifier.load_state_dict(state["query_classifier"])
         model.eval()
-
-        dataset = CoarseRetrievalDataset(cfg, sequence_entries=sequence_entries, align_query_to_gt_yaw=False)
         per_sequence_descriptor_bank: dict[str, np.ndarray] = {}
         per_sequence_patch_ids: dict[str, np.ndarray] = {}
         for resources in dataset.sequence_resources:
@@ -167,6 +185,8 @@ def evaluate_retrieval(
                 descriptor_bank=per_sequence_descriptor_bank[sequence_name],
                 rotation_angles_deg=cfg.query_rotation_search_angles_deg,
                 device=device,
+                classifier=model.query_classifier,
+                classifier_score_weight=cfg.classifier_score_weight,
             )
             ranking = np.argsort(scores)[::-1]
             patch_ids = per_sequence_patch_ids[sequence_name]

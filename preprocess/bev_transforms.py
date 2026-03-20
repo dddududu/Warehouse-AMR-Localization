@@ -41,3 +41,30 @@ def rotate_bev_tensor(bev_tensor: np.ndarray, angle_deg: float) -> np.ndarray:
             )
         )
     return np.stack(rotated_channels, axis=0).astype(np.float32)
+
+
+def translate_bev_tensor(bev_tensor: np.ndarray, shift_x_cells: int, shift_y_cells: int) -> np.ndarray:
+    tensor = np.asarray(bev_tensor, dtype=np.float32)
+    if tensor.ndim != 3:
+        raise ValueError(f"Expected bev_tensor with shape (C, H, W), got {tensor.shape}.")
+    if shift_x_cells == 0 and shift_y_cells == 0:
+        return tensor.astype(np.float32, copy=True)
+
+    channels, height, width = tensor.shape
+    translated = np.zeros((channels, height, width), dtype=np.float32)
+
+    src_x_start = max(0, -int(shift_x_cells))
+    src_x_end = min(width, width - int(shift_x_cells))
+    dst_x_start = max(0, int(shift_x_cells))
+    dst_x_end = dst_x_start + max(0, src_x_end - src_x_start)
+
+    src_y_start = max(0, -int(shift_y_cells))
+    src_y_end = min(height, height - int(shift_y_cells))
+    dst_y_start = max(0, int(shift_y_cells))
+    dst_y_end = dst_y_start + max(0, src_y_end - src_y_start)
+
+    if src_x_start >= src_x_end or src_y_start >= src_y_end:
+        return translated
+
+    translated[:, dst_y_start:dst_y_end, dst_x_start:dst_x_end] = tensor[:, src_y_start:src_y_end, src_x_start:src_x_end]
+    return translated

@@ -35,3 +35,35 @@ def test_multi_sequence_config_splits_without_leakage(synthetic_multi_sequence_d
         {"Seq_A", "Seq_B"}
     )
     assert val_dataset[0]["sequence_name"] == "Seq_C"
+
+
+def test_explicit_sequence_entries_supports_multi_root_splits(synthetic_multi_sequence_dataset, tmp_path) -> None:
+    parent_root = synthetic_multi_sequence_dataset["dataset_parent_root"]
+    config = load_coarse_retrieval_config(
+        {
+            "sequence_entries": [
+                {
+                    "sequence_name": "Train_Seq_A",
+                    "sequence_root": str(parent_root / "Seq_A" / "Seq_A"),
+                    "split": "train",
+                },
+                {
+                    "sequence_name": "Train_Seq_B",
+                    "sequence_root": str(parent_root / "Seq_B" / "Seq_B"),
+                    "split": "train",
+                },
+                {
+                    "sequence_name": "Val_Seq_C",
+                    "sequence_root": str(parent_root / "Seq_C" / "Seq_C"),
+                    "split": "val",
+                },
+            ],
+            "shared_calibration_path": str(parent_root / "Seq_A" / "Seq_A" / "calibrations.txt"),
+            "shared_map_path": str(parent_root / "Seq_A" / "Seq_A" / "groundtruth_map.ply"),
+            "cache_dir": str(tmp_path / "cache_explicit"),
+        }
+    )
+
+    train_entries, val_entries = config.split_sequence_entries()
+    assert [entry["sequence_name"] for entry in train_entries] == ["Train_Seq_A", "Train_Seq_B"]
+    assert [entry["sequence_name"] for entry in val_entries] == ["Val_Seq_C"]

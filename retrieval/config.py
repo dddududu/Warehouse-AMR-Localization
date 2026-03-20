@@ -15,6 +15,7 @@ class CoarseRetrievalConfig:
     dataset_parent_root: str | None = None
     shared_calibration_path: str | None = None
     shared_map_path: str | None = None
+    sequence_entries: list[dict[str, Any]] | None = None
     sequence_names: list[str] | None = None
     val_sequence_names: list[str] | None = None
     crop_x_min: float = -10.0
@@ -38,14 +39,28 @@ class CoarseRetrievalConfig:
     hard_negative_min_distance_m: float = 5.0
     hard_negative_max_distance_m: float = 25.0
     train_batch_size: int = 2
+    train_num_workers: int = 0
     train_epochs: int = 10
     learning_rate: float = 1.0e-3
+    weight_decay: float = 0.0
+    lr_decay_gamma: float = 1.0
+    init_checkpoint_path: str | None = None
     temperature: float = 0.07
     model_seed: int = 0
     device: str = "cpu"
+    use_amp: bool = False
     val_ratio: float = 0.1
     eval_every_epochs: int = 1
     save_best_only: bool = True
+    share_query_patch_encoder: bool = False
+    train_random_rotation_deg: float = 0.0
+    train_random_xy_shift_cells: int = 0
+    train_dropout_prob: float = 0.0
+    train_count_noise_std: float = 0.0
+    train_height_noise_std: float = 0.0
+    use_patch_classification_loss: bool = False
+    classification_loss_weight: float = 0.0
+    classifier_score_weight: float = 0.0
 
     @property
     def bev_num_cells(self) -> int:
@@ -80,6 +95,8 @@ class CoarseRetrievalConfig:
         return angles
 
     def resolved_sequence_names(self) -> list[str]:
+        if self.sequence_entries:
+            return [str(entry["sequence_name"]) for entry in self.resolved_sequence_entries()]
         if self.sequence_names:
             return list(self.sequence_names)
         if self.sequence_root:
@@ -90,6 +107,43 @@ class CoarseRetrievalConfig:
         raise ValueError("Either sequence_root or dataset_parent_root must be configured.")
 
     def resolved_sequence_entries(self) -> list[dict[str, str]]:
+        if self.sequence_entries:
+            entries: list[dict[str, str]] = []
+            shared_calibration_path = str(Path(self.shared_calibration_path)) if self.shared_calibration_path else None
+            shared_map_path = str(Path(self.shared_map_path)) if self.shared_map_path else None
+            for raw_entry in self.sequence_entries:
+                if not isinstance(raw_entry, Mapping):
+                    raise ValueError("Each item in sequence_entries must be a mapping.")
+                sequence_name = str(raw_entry.get("sequence_name") or "")
+                if not sequence_name:
+                    if raw_entry.get("sequence_root"):
+                        sequence_name = Path(str(raw_entry["sequence_root"])).name
+                    else:
+                        raise ValueError("sequence_entries items require sequence_name or sequence_root.")
+                sequence_root = raw_entry.get("sequence_root")
+                if sequence_root is None:
+                    dataset_parent_root = raw_entry.get("dataset_parent_root") or self.dataset_parent_root
+                    if dataset_parent_root is None:
+                        raise ValueError(
+                            "sequence_entries items require sequence_root, or dataset_parent_root must be provided."
+                        )
+                    sequence_root = Path(str(dataset_parent_root)) / sequence_name / sequence_name
+                calibration_path = raw_entry.get("calibration_path") or shared_calibration_path
+                map_path = raw_entry.get("map_path") or shared_map_path
+                if calibration_path is None:
+                    calibration_path = str(Path(str(sequence_root)) / "calibrations.txt")
+                if map_path is None:
+                    map_path = str(Path(str(sequence_root)) / "groundtruth_map.ply")
+                entry = {
+                    "sequence_name": sequence_name,
+                    "sequence_root": str(Path(str(sequence_root))),
+                    "calibration_path": str(Path(str(calibration_path))),
+                    "map_path": str(Path(str(map_path))),
+                }
+                if "split" in raw_entry and raw_entry["split"] is not None:
+                    entry["split"] = str(raw_entry["split"])
+                entries.append(entry)
+            return entries
         if self.sequence_root and self.calibration_path and self.map_path:
             sequence_name = Path(self.sequence_root).name
             return [
@@ -129,6 +183,16 @@ class CoarseRetrievalConfig:
         entries = self.resolved_sequence_entries()
         if len(entries) == 1:
             return entries, []
+
+        explicit_split_entries = [entry for entry in entries if entry.get("split") is not None]
+        if explicit_split_entries:
+            train_entries = [entry for entry in entries if str(entry.get("split", "train")).lower() != "val"]
+            val_entries = [entry for entry in entries if str(entry.get("split", "train")).lower() == "val"]
+            if not train_entries:
+                raise ValueError("Explicit split configuration requires at least one train entry.")
+            if not val_entries:
+                raise ValueError("Explicit split configuration requires at least one val entry.")
+            return train_entries, val_entries
 
         val_names = set(self.val_sequence_names or [])
         if not val_names:

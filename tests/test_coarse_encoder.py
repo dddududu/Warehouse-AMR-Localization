@@ -35,3 +35,24 @@ def test_train_script_runs_on_minimal_sample(synthetic_dataset, tmp_path) -> Non
         output_checkpoint=tmp_path / "model.pt",
     )
     assert result["checkpoint_path"].endswith("model.pt")
+
+
+def test_train_script_supports_patch_classifier(synthetic_dataset, tmp_path) -> None:
+    result = train_coarse_retrieval(
+        {
+            "sequence_root": str(synthetic_dataset["sequence_root"]),
+            "calibration_path": str(synthetic_dataset["calibration_path"]),
+            "map_path": str(synthetic_dataset["map_path"]),
+            "cache_dir": str(tmp_path / "cache_classifier"),
+            "train_batch_size": 1,
+            "train_epochs": 1,
+            "num_hard_negative_patches": 0,
+            "num_random_negative_patches": 0,
+            "use_patch_classification_loss": True,
+            "classification_loss_weight": 0.2,
+            "classifier_score_weight": 0.2,
+            "val_ratio": 0.0,
+        },
+        output_checkpoint=tmp_path / "model_classifier.pt",
+    )
+    assert result["checkpoint_path"].endswith("model_classifier.pt")

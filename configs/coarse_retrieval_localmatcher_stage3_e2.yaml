@@ -1,0 +1,76 @@
+shared_calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+shared_map_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/groundtruth_map.ply"
+sequence_entries:
+  - sequence_name: "Jun15_Aisle_CCW_Run_1"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+    split: "train"
+  - sequence_name: "Jun15_Aisle_CCW_Run_2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    split: "train"
+  - sequence_name: "Jun15_Aisle_CW_Run_1"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+    split: "train"
+  - sequence_name: "Jun15_Aisle_CW_Run_2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+    split: "train"
+  - sequence_name: "Jun23_Aisle_CCW_Run_1"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+    split: "train"
+  - sequence_name: "Jun23_Aisle_CW_Run_1"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+    split: "train"
+  - sequence_name: "Jun23_Aisle_CCW_Run_2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    split: "val"
+  - sequence_name: "Jun23_Aisle_CW_Run_2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+    split: "val"
+crop_x_min: -10.0
+crop_x_max: 10.0
+crop_y_min: -10.0
+crop_y_max: 10.0
+crop_z_min: 0.13
+crop_z_max: 4.73
+bev_resolution: 0.1
+bev_size_xy_m: 20.0
+patch_size_m: 20.0
+patch_stride_m: 5.0
+descriptor_dim: 256
+topk: 3
+cache_dir: "./cache/coarse_retrieval_localmatcher_stage3_e2"
+align_query_to_gt_yaw_train: true
+use_query_rotation_search: true
+query_rotation_search_step_deg: 30.0
+num_hard_negative_patches: 8
+num_random_negative_patches: 8
+hard_negative_min_distance_m: 5.0
+hard_negative_max_distance_m: 30.0
+train_batch_size: 4
+train_num_workers: 4
+train_epochs: 2
+learning_rate: 0.0001
+weight_decay: 0.0001
+lr_decay_gamma: 0.98
+init_checkpoint_path: "outputs/coarse_retrieval_multiday_finetune_e2.pt"
+temperature: 0.07
+model_seed: 0
+device: "cuda"
+use_amp: true
+eval_every_epochs: 1
+save_best_only: true
+share_query_patch_encoder: false
+train_random_rotation_deg: 6.0
+train_random_xy_shift_cells: 5
+train_dropout_prob: 0.02
+train_count_noise_std: 0.05
+train_height_noise_std: 0.03
+use_patch_classification_loss: true
+classification_loss_weight: 0.2
+classifier_score_weight: 0.5
+use_local_matcher: true
+local_matcher_feature_level: "stage3"
+local_matcher_hidden_channels: 64
+local_matcher_max_shift_cells: 3
+local_matcher_temperature: 0.07
+local_matcher_loss_weight: 0.2
+local_matcher_score_weight: 0.25

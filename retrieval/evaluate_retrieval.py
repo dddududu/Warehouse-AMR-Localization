@@ -20,6 +20,7 @@ from preprocess.local_lidar_cropper import LocalCropConfig, crop_local_lidar_poi
 from preprocess.map_patch_builder import PatchMetadata, choose_gt_patch_id
 from retrieval.config import load_coarse_retrieval_config
 from retrieval.retrieve_topk import (
+    build_patch_search_bank,
     build_ensemble_specs,
     combine_model_scores,
     load_descriptor_bank,
@@ -74,6 +75,7 @@ def evaluate_retrieval(
             else None
         )
         model = None
+        local_feature_bank = None
         if ensemble_specs is None:
             state = torch.load(checkpoint_path, map_location=device) if checkpoint_path is not None else None
             num_patch_classes = int(descriptor_bank.shape[0]) if state and state.get("query_classifier") is not None else None
@@ -83,12 +85,26 @@ def evaluate_retrieval(
                 backbone_variant=str((state or {}).get("config", {}).get("backbone_variant", cfg.backbone_variant)),
                 share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
                 num_patch_classes=num_patch_classes,
+                use_local_matcher=bool((state or {}).get("config", {}).get("use_local_matcher", cfg.use_local_matcher)),
+                local_matcher_feature_level=str(
+                    (state or {}).get("config", {}).get("local_matcher_feature_level", cfg.local_matcher_feature_level)
+                ),
+                local_matcher_hidden_channels=int(
+                    (state or {}).get("config", {}).get("local_matcher_hidden_channels", cfg.local_matcher_hidden_channels)
+                ),
+                local_matcher_max_shift_cells=int(
+                    (state or {}).get("config", {}).get("local_matcher_max_shift_cells", cfg.local_matcher_max_shift_cells)
+                ),
             ).to(device)
             if checkpoint_path is not None:
                 model.query_encoder.load_state_dict(state["query_encoder"])
+                model.patch_encoder.load_state_dict(state["patch_encoder"])
                 if model.query_classifier is not None and state.get("query_classifier") is not None:
                     model.query_classifier.load_state_dict(state["query_classifier"])
+                if model.local_matcher is not None and state.get("local_matcher") is not None:
+                    model.local_matcher.load_state_dict(state["local_matcher"], strict=False)
             model.eval()
+            descriptor_bank, local_feature_bank = build_patch_search_bank(model, patch_tensors, device=device)
 
         last_frame = len(dataset) if num_frames is None else min(len(dataset), frame_start + num_frames)
         frame_indices = list(range(frame_start, last_frame, max(1, int(frame_stride))))
@@ -112,6 +128,11 @@ def evaluate_retrieval(
                         device=device,
                         classifier=spec["model"].query_classifier,
                         classifier_score_weight=spec["classifier_score_weight"],
+                        local_matcher=spec["model"].local_matcher,
+                        local_feature_bank=spec["local_feature_bank"],
+                        local_feature_level=spec["model"].local_matcher_feature_level,
+                        local_matcher_score_weight=spec["local_matcher_score_weight"],
+                        local_matcher_rerank_topk=spec["local_matcher_rerank_topk"],
                     )
                     score_entries.append((scores_i, angles_i, spec["model_weight"]))
                 scores, best_angles = combine_model_scores(score_entries)
@@ -124,6 +145,11 @@ def evaluate_retrieval(
                     device=device,
                     classifier=model.query_classifier,
                     classifier_score_weight=cfg.classifier_score_weight,
+                    local_matcher=model.local_matcher,
+                    local_feature_bank=local_feature_bank,
+                    local_feature_level=model.local_matcher_feature_level,
+                    local_matcher_score_weight=cfg.local_matcher_score_weight,
+                    local_matcher_rerank_topk=cfg.local_matcher_rerank_topk,
                 )
             ranking = np.argsort(scores)[::-1]
             topk_order = ranking[: cfg.topk]
@@ -195,26 +221,32 @@ def evaluate_retrieval(
                     model.query_classifier.load_state_dict(state["query_classifier"])
             model.eval()
         per_sequence_descriptor_bank: dict[str, np.ndarray] = {}
+        per_sequence_local_feature_bank: dict[str, np.ndarray | None] = {}
         per_sequence_ensemble_banks: dict[str, list[np.ndarray]] = {}
+        per_sequence_ensemble_local_banks: dict[str, list[np.ndarray | None]] = {}
         per_sequence_patch_ids: dict[str, np.ndarray] = {}
         for resources in dataset.sequence_resources:
             if ensemble_specs is not None:
                 model_banks: list[np.ndarray] = []
+                model_local_banks: list[np.ndarray | None] = []
                 for spec in ensemble_specs:
-                    descriptors: list[np.ndarray] = []
-                    with torch.no_grad():
-                        for start in range(0, len(resources.patch_tensors), 16):
-                            batch = torch.from_numpy(resources.patch_tensors[start : start + 16]).to(device).float()
-                            descriptors.append(spec["model"].encode_patch(batch).cpu().numpy())
-                    model_banks.append(np.concatenate(descriptors, axis=0))
+                    descriptor_bank_i, local_feature_bank_i = build_patch_search_bank(
+                        spec["model"],
+                        resources.patch_tensors,
+                        device=device,
+                    )
+                    model_banks.append(descriptor_bank_i)
+                    model_local_banks.append(local_feature_bank_i)
                 per_sequence_ensemble_banks[resources.sequence_name] = model_banks
+                per_sequence_ensemble_local_banks[resources.sequence_name] = model_local_banks
             else:
-                descriptors = []
-                with torch.no_grad():
-                    for start in range(0, len(resources.patch_tensors), 16):
-                        batch = torch.from_numpy(resources.patch_tensors[start : start + 16]).to(device).float()
-                        descriptors.append(model.encode_patch(batch).cpu().numpy())
-                per_sequence_descriptor_bank[resources.sequence_name] = np.concatenate(descriptors, axis=0)
+                descriptor_bank_i, local_feature_bank_i = build_patch_search_bank(
+                    model,
+                    resources.patch_tensors,
+                    device=device,
+                )
+                per_sequence_descriptor_bank[resources.sequence_name] = descriptor_bank_i
+                per_sequence_local_feature_bank[resources.sequence_name] = local_feature_bank_i
             per_sequence_patch_ids[resources.sequence_name] = np.arange(len(resources.patch_tensors), dtype=np.int32)
 
         filtered_sample_indices = [
@@ -235,7 +267,11 @@ def evaluate_retrieval(
             gt_patch_id = int(sample["gt_patch_id"])
             if ensemble_specs is not None:
                 score_entries = []
-                for spec, descriptor_bank_i in zip(ensemble_specs, per_sequence_ensemble_banks[sequence_name]):
+                for spec, descriptor_bank_i, local_feature_bank_i in zip(
+                    ensemble_specs,
+                    per_sequence_ensemble_banks[sequence_name],
+                    per_sequence_ensemble_local_banks[sequence_name],
+                ):
                     scores_i, angles_i = score_query_bev_against_bank(
                         query_bev=sample["query_bev"].numpy(),
                         encoder=spec["model"].query_encoder,
@@ -244,6 +280,11 @@ def evaluate_retrieval(
                         device=device,
                         classifier=spec["model"].query_classifier,
                         classifier_score_weight=spec["classifier_score_weight"],
+                        local_matcher=spec["model"].local_matcher,
+                        local_feature_bank=local_feature_bank_i,
+                        local_feature_level=spec["model"].local_matcher_feature_level,
+                        local_matcher_score_weight=spec["local_matcher_score_weight"],
+                        local_matcher_rerank_topk=spec["local_matcher_rerank_topk"],
                     )
                     score_entries.append((scores_i, angles_i, spec["model_weight"]))
                 scores, best_angles = combine_model_scores(score_entries)
@@ -256,6 +297,11 @@ def evaluate_retrieval(
                     device=device,
                     classifier=model.query_classifier,
                     classifier_score_weight=cfg.classifier_score_weight,
+                    local_matcher=model.local_matcher,
+                    local_feature_bank=per_sequence_local_feature_bank[sequence_name],
+                    local_feature_level=model.local_matcher_feature_level,
+                    local_matcher_score_weight=cfg.local_matcher_score_weight,
+                    local_matcher_rerank_topk=cfg.local_matcher_rerank_topk,
                 )
             ranking = np.argsort(scores)[::-1]
             patch_ids = per_sequence_patch_ids[sequence_name]

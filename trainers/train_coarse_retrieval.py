@@ -17,17 +17,7 @@ from dataset_io.retrieval_dataset import CoarseRetrievalDataset
 from losses.retrieval_loss import RetrievalInfoNCELoss
 from models.coarse_retrieval_model import CoarseRetrievalModel
 from retrieval.config import load_coarse_retrieval_config
-from retrieval.retrieve_topk import score_query_bev_against_bank
-
-
-def _build_patch_descriptor_bank(model: CoarseRetrievalModel, patch_tensors: np.ndarray, device: torch.device) -> np.ndarray:
-    descriptors: list[np.ndarray] = []
-    model.patch_encoder.eval()
-    with torch.no_grad():
-        for start in range(0, len(patch_tensors), 16):
-            batch = torch.from_numpy(patch_tensors[start : start + 16]).to(device).float()
-            descriptors.append(model.encode_patch(batch).cpu().numpy())
-    return np.concatenate(descriptors, axis=0)
+from retrieval.retrieve_topk import build_patch_search_bank, score_query_bev_against_bank
 
 
 def _resolve_num_patch_classes(dataset: CoarseRetrievalDataset) -> int | None:
@@ -52,6 +42,13 @@ def _load_init_checkpoint(model: CoarseRetrievalModel, checkpoint_path: str | Pa
                 model.query_classifier.load_state_dict(classifier_state, strict=False)
             except RuntimeError:
                 pass
+    if model.local_matcher is not None and state.get("local_matcher") is not None:
+        local_matcher_state = state["local_matcher"]
+        if local_matcher_state is not None:
+            try:
+                model.local_matcher.load_state_dict(local_matcher_state, strict=False)
+            except RuntimeError:
+                pass
 
 
 def _set_module_trainable(module: torch.nn.Module | None, trainable: bool) -> None:
@@ -65,10 +62,12 @@ def _evaluate_recall(model: CoarseRetrievalModel, dataset: CoarseRetrievalDatase
     if len(dataset) == 0:
         return {"num_val_frames": 0, "recall@1": None, "recall@5": None, f"recall@{topk}": None}
 
-    per_sequence_descriptor_bank = {
-        resources.sequence_name: _build_patch_descriptor_bank(model, resources.patch_tensors, device=device)
-        for resources in dataset.sequence_resources
-    }
+    per_sequence_descriptor_bank: dict[str, np.ndarray] = {}
+    per_sequence_local_feature_bank: dict[str, np.ndarray | None] = {}
+    for resources in dataset.sequence_resources:
+        descriptor_bank, local_feature_bank = build_patch_search_bank(model, resources.patch_tensors, device=device)
+        per_sequence_descriptor_bank[resources.sequence_name] = descriptor_bank
+        per_sequence_local_feature_bank[resources.sequence_name] = local_feature_bank
     hits_at_1 = 0
     hits_at_5 = 0
     hits_at_k = 0
@@ -86,6 +85,10 @@ def _evaluate_recall(model: CoarseRetrievalModel, dataset: CoarseRetrievalDatase
             device=device,
             classifier=model.query_classifier,
             classifier_score_weight=dataset.config.classifier_score_weight,
+            local_matcher=model.local_matcher,
+            local_feature_bank=per_sequence_local_feature_bank[sequence_name],
+            local_feature_level=model.local_matcher_feature_level,
+            local_matcher_score_weight=dataset.config.local_matcher_score_weight,
         )
         ranking = np.argsort(scores)[::-1]
         if gt_patch_id == int(ranking[0]):
@@ -129,6 +132,10 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
         backbone_variant=cfg.backbone_variant,
         share_query_patch_encoder=cfg.share_query_patch_encoder,
         num_patch_classes=num_patch_classes,
+        use_local_matcher=cfg.use_local_matcher,
+        local_matcher_feature_level=cfg.local_matcher_feature_level,
+        local_matcher_hidden_channels=cfg.local_matcher_hidden_channels,
+        local_matcher_max_shift_cells=cfg.local_matcher_max_shift_cells,
     ).to(device)
     if cfg.init_checkpoint_path:
         _load_init_checkpoint(model, cfg.init_checkpoint_path, device=device)
@@ -173,6 +180,22 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
                 if model.query_classifier is not None and cfg.classification_loss_weight > 0.0:
                     classification_loss = F.cross_entropy(outputs["query_logits"], gt_patch_id)
                     loss = loss + cfg.classification_loss_weight * classification_loss
+                if model.local_matcher is not None and cfg.local_matcher_loss_weight > 0.0:
+                    local_positive_scores = model.local_matcher.score_pairs(
+                        outputs["query_local_map"],
+                        outputs["positive_local_map"],
+                    )
+                    local_negative_scores = model.local_matcher.score_pairwise(
+                        outputs["query_local_map"],
+                        outputs["negative_local_maps"],
+                    )
+                    local_logits = torch.cat(
+                        (local_positive_scores[:, None], local_negative_scores),
+                        dim=1,
+                    ) / float(cfg.local_matcher_temperature)
+                    local_labels = torch.zeros(local_logits.shape[0], dtype=torch.long, device=local_logits.device)
+                    local_loss = F.cross_entropy(local_logits, local_labels)
+                    loss = loss + cfg.local_matcher_loss_weight * local_loss
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -201,6 +224,7 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
                     "query_encoder": model.query_encoder.state_dict(),
                     "patch_encoder": model.patch_encoder.state_dict(),
                     "query_classifier": model.query_classifier.state_dict() if model.query_classifier is not None else None,
+                    "local_matcher": model.local_matcher.state_dict() if model.local_matcher is not None else None,
                     "history": history.copy(),
                     "validation_history": validation_history.copy(),
                     "config": cfg.__dict__,
@@ -211,6 +235,7 @@ def train_coarse_retrieval(config, output_checkpoint: str | Path | None = None) 
         "query_encoder": model.query_encoder.state_dict(),
         "patch_encoder": model.patch_encoder.state_dict(),
         "query_classifier": model.query_classifier.state_dict() if model.query_classifier is not None else None,
+        "local_matcher": model.local_matcher.state_dict() if model.local_matcher is not None else None,
         "history": history,
         "validation_history": validation_history,
         "config": cfg.__dict__,

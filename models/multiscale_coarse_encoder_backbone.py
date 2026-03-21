@@ -93,7 +93,7 @@ class MultiScaleCoarseBEVEncoderBackbone(nn.Module):
         self.multiscale_head = MultiScaleAttentionDescriptorHead(descriptor_dim=descriptor_dim)
         initialize_module_deterministically(self, seed=init_seed)
 
-    def forward(self, bev_tensor: torch.Tensor) -> torch.Tensor:
+    def forward_features(self, bev_tensor: torch.Tensor) -> dict[str, torch.Tensor]:
         x = self.normalizer(bev_tensor)
         x = self.stem(x)
         x = self.stage1(x)
@@ -106,9 +106,17 @@ class MultiScaleCoarseBEVEncoderBackbone(nn.Module):
         pooled_stage2 = F.adaptive_avg_pool2d(stage2, output_size=1).flatten(1)
         pooled_stage3 = F.adaptive_avg_pool2d(stage3, output_size=1).flatten(1)
         pooled_stage4 = legacy_pooled.flatten(1)
-        return self.multiscale_head(
-            pooled_stage2=pooled_stage2,
-            pooled_stage3=pooled_stage3,
-            pooled_stage4=pooled_stage4,
-            legacy_descriptor=legacy_descriptor,
-        )
+        return {
+            "stage2": stage2,
+            "stage3": stage3,
+            "stage4": stage4,
+            "descriptor": self.multiscale_head(
+                pooled_stage2=pooled_stage2,
+                pooled_stage3=pooled_stage3,
+                pooled_stage4=pooled_stage4,
+                legacy_descriptor=legacy_descriptor,
+            ),
+        }
+
+    def forward(self, bev_tensor: torch.Tensor) -> torch.Tensor:
+        return self.forward_features(bev_tensor)["descriptor"]

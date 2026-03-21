@@ -110,13 +110,21 @@ class CoarseBEVEncoderBackbone(nn.Module):
         )
         initialize_module_deterministically(self, seed=init_seed)
 
-    def forward(self, bev_tensor: torch.Tensor) -> torch.Tensor:
+    def forward_features(self, bev_tensor: torch.Tensor) -> dict[str, torch.Tensor]:
         x = self.normalizer(bev_tensor)
         x = self.stem(x)
         x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.stage4(x)
-        pooled = self.pool(x)
+        stage2 = self.stage2(x)
+        stage3 = self.stage3(stage2)
+        stage4 = self.stage4(stage3)
+        pooled = self.pool(stage4)
         descriptor = self.projection(pooled)
-        return F.normalize(descriptor, dim=1)
+        return {
+            "stage2": stage2,
+            "stage3": stage3,
+            "stage4": stage4,
+            "descriptor": F.normalize(descriptor, dim=1),
+        }
+
+    def forward(self, bev_tensor: torch.Tensor) -> torch.Tensor:
+        return self.forward_features(bev_tensor)["descriptor"]

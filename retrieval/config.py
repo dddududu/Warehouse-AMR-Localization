@@ -59,6 +59,14 @@ class CoarseRetrievalConfig:
     ensemble_checkpoint_paths: list[str] | None = None
     ensemble_model_weights: list[float] | None = None
     ensemble_classifier_score_weights: list[float] | None = None
+    use_local_matcher: bool = False
+    local_matcher_feature_level: str = "stage4"
+    local_matcher_hidden_channels: int = 48
+    local_matcher_max_shift_cells: int = 2
+    local_matcher_temperature: float = 0.07
+    local_matcher_loss_weight: float = 0.0
+    local_matcher_score_weight: float = 0.0
+    local_matcher_rerank_topk: int = 0
     train_random_rotation_deg: float = 0.0
     train_random_xy_shift_cells: int = 0
     train_dropout_prob: float = 0.0

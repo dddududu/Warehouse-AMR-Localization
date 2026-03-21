@@ -1,5 +1,10 @@
 # Checkpoints
 
+- `coarse_retrieval_localmatcher_stage3_hardrerank_e1_top1_0p4011_r3_0p6645.pt`
+  - Source config: `configs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.yaml`
+  - Recommended eval config: `configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml`
+  - Test set: `Oct. 12, 2022 / Aisle_CCW`
+  - Metrics: `Top1=0.4011`, `Recall@3=0.6645`, `MRR=0.5720`
 - `coarse_retrieval_multiday_finetune_e2_top1_0p3388_r3_0p7038.pt`
   - Source config: `configs/coarse_retrieval_multiday_finetune_e2.yaml`
   - Recommended eval config: `configs/eval_oct12_aisle_ccw_multiday.yaml`

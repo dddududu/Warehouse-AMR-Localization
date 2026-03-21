@@ -46,3 +46,6 @@ class CoarseQueryEncoder(nn.Module):
 
     def forward(self, bev_tensor):
         return self.backbone(bev_tensor)
+
+    def forward_features(self, bev_tensor):
+        return self.backbone.forward_features(bev_tensor)

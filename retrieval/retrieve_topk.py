@@ -79,8 +79,18 @@ def _build_retrieval_model(
         descriptor_dim=cfg.descriptor_dim,
         init_seed=cfg.model_seed,
         backbone_variant=str(state_cfg.get("backbone_variant", getattr(cfg, "backbone_variant", "legacy"))),
-        share_query_patch_encoder=bool((state or {}).get("config", {}).get("share_query_patch_encoder", False)),
+        share_query_patch_encoder=bool(state_cfg.get("share_query_patch_encoder", getattr(cfg, "share_query_patch_encoder", False))),
         num_patch_classes=num_patch_classes if state.get("query_classifier") is not None else None,
+        use_local_matcher=bool(state_cfg.get("use_local_matcher", getattr(cfg, "use_local_matcher", False))),
+        local_matcher_feature_level=str(
+            state_cfg.get("local_matcher_feature_level", getattr(cfg, "local_matcher_feature_level", "stage4"))
+        ),
+        local_matcher_hidden_channels=int(
+            state_cfg.get("local_matcher_hidden_channels", getattr(cfg, "local_matcher_hidden_channels", 48))
+        ),
+        local_matcher_max_shift_cells=int(
+            state_cfg.get("local_matcher_max_shift_cells", getattr(cfg, "local_matcher_max_shift_cells", 2))
+        ),
     ).to(device)
     if state.get("query_encoder") is not None:
         retrieval_model.query_encoder.load_state_dict(state["query_encoder"])
@@ -88,8 +98,34 @@ def _build_retrieval_model(
         retrieval_model.patch_encoder.load_state_dict(state["patch_encoder"])
     if retrieval_model.query_classifier is not None and state.get("query_classifier") is not None:
         retrieval_model.query_classifier.load_state_dict(state["query_classifier"])
+    if retrieval_model.local_matcher is not None and state.get("local_matcher") is not None:
+        retrieval_model.local_matcher.load_state_dict(state["local_matcher"], strict=False)
     retrieval_model.eval()
     return retrieval_model, state
+
+
+def build_patch_search_bank(
+    retrieval_model: CoarseRetrievalModel,
+    patch_tensors: np.ndarray,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    descriptor_chunks: list[np.ndarray] = []
+    local_feature_chunks: list[np.ndarray] = []
+    local_matcher_enabled = retrieval_model.local_matcher is not None
+    with torch.no_grad():
+        for start in range(0, len(patch_tensors), 16):
+            batch = torch.from_numpy(patch_tensors[start : start + 16]).to(device).float()
+            patch_features = retrieval_model.patch_encoder.forward_features(batch)
+            descriptor_chunks.append(patch_features["descriptor"].cpu().numpy())
+            if local_matcher_enabled:
+                local_feature_chunks.append(
+                    retrieval_model.local_matcher.project(
+                        retrieval_model._select_local_feature(patch_features)
+                    ).cpu().numpy()
+                )
+    descriptor_bank = np.concatenate(descriptor_chunks, axis=0)
+    local_feature_bank = np.concatenate(local_feature_chunks, axis=0) if local_feature_chunks else None
+    return descriptor_bank, local_feature_bank
 
 
 def build_ensemble_specs(
@@ -107,17 +143,16 @@ def build_ensemble_specs(
             num_patch_classes=int(patch_tensors.shape[0]),
             device=device,
         )
-        descriptors: list[np.ndarray] = []
-        with torch.no_grad():
-            for start in range(0, len(patch_tensors), 16):
-                batch = torch.from_numpy(patch_tensors[start : start + 16]).to(device).float()
-                descriptors.append(retrieval_model.encode_patch(batch).cpu().numpy())
+        descriptor_bank, local_feature_bank = build_patch_search_bank(retrieval_model, patch_tensors, device=device)
         specs.append(
             {
                 "model": retrieval_model,
-                "descriptor_bank": np.concatenate(descriptors, axis=0),
+                "descriptor_bank": descriptor_bank,
+                "local_feature_bank": local_feature_bank,
                 "model_weight": float(model_weight),
                 "classifier_score_weight": float(classifier_score_weight),
+                "local_matcher_score_weight": float(getattr(cfg, "local_matcher_score_weight", 0.0)),
+                "local_matcher_rerank_topk": int(getattr(cfg, "local_matcher_rerank_topk", 0)),
             }
         )
     return specs
@@ -154,6 +189,11 @@ def score_query_bev_with_ensemble(
             device=device,
             classifier=spec["model"].query_classifier,
             classifier_score_weight=spec["classifier_score_weight"],
+            local_matcher=spec["model"].local_matcher,
+            local_feature_bank=spec["local_feature_bank"],
+            local_feature_level=spec["model"].local_matcher_feature_level,
+            local_matcher_score_weight=spec["local_matcher_score_weight"],
+            local_matcher_rerank_topk=spec["local_matcher_rerank_topk"],
         )
         score_entries.append((scores, best_angles, spec["model_weight"]))
     return combine_model_scores(score_entries)
@@ -167,13 +207,27 @@ def score_query_bev_against_bank(
     device: torch.device,
     classifier: nn.Module | None = None,
     classifier_score_weight: float = 0.0,
+    local_matcher: nn.Module | None = None,
+    local_feature_bank: np.ndarray | None = None,
+    local_feature_level: str = "stage4",
+    local_matcher_score_weight: float = 0.0,
+    local_matcher_rerank_topk: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     best_scores = np.full(descriptor_bank.shape[0], -np.inf, dtype=np.float32)
     best_angles = np.zeros(descriptor_bank.shape[0], dtype=np.float32)
+    patch_local_bank_tensor = None
+    if local_matcher is not None and local_feature_bank is not None and local_matcher_score_weight > 0.0:
+        patch_local_bank_tensor = torch.from_numpy(local_feature_bank).to(device).float()
     with torch.no_grad():
         for angle_deg in rotation_angles_deg:
             rotated_bev = rotate_bev_tensor(query_bev, angle_deg) if abs(angle_deg) > 1e-6 else query_bev
-            descriptor_tensor = encoder(torch.from_numpy(rotated_bev[None, ...]).to(device))
+            query_tensor = torch.from_numpy(rotated_bev[None, ...]).to(device)
+            if classifier is not None or patch_local_bank_tensor is not None:
+                query_features = encoder.forward_features(query_tensor)
+                descriptor_tensor = query_features["descriptor"]
+            else:
+                query_features = None
+                descriptor_tensor = encoder(query_tensor)
             descriptor = descriptor_tensor.cpu().numpy()[0]
             scores = descriptor_bank @ descriptor
             if classifier is not None and classifier_score_weight > 0.0:
@@ -182,6 +236,24 @@ def score_query_bev_against_bank(
                     scores = (
                         (1.0 - float(classifier_score_weight)) * _standardize_scores(scores)
                         + float(classifier_score_weight) * _standardize_scores(classifier_scores)
+                    )
+            if patch_local_bank_tensor is not None:
+                local_query_map = local_matcher.project(query_features[str(local_feature_level)])
+                rerank_topk = min(max(0, int(local_matcher_rerank_topk)), scores.shape[0])
+                if rerank_topk > 0:
+                    shortlist = np.argpartition(scores, -rerank_topk)[-rerank_topk:]
+                    local_scores = local_matcher.score_bank(local_query_map, patch_local_bank_tensor[shortlist]).cpu().numpy()
+                    reranked_scores = np.array(scores, copy=True)
+                    reranked_scores[shortlist] = (
+                        reranked_scores[shortlist]
+                        + float(local_matcher_score_weight) * _standardize_scores(local_scores)
+                    )
+                    scores = reranked_scores
+                else:
+                    local_scores = local_matcher.score_bank(local_query_map, patch_local_bank_tensor).cpu().numpy()
+                    scores = (
+                        (1.0 - float(local_matcher_score_weight)) * _standardize_scores(scores)
+                        + float(local_matcher_score_weight) * _standardize_scores(local_scores)
                     )
             improve = scores > best_scores
             best_scores[improve] = scores[improve]
@@ -252,6 +324,11 @@ def retrieve_topk_for_frame(
         )
         if state.get("query_classifier") is None:
             retrieval_model.query_classifier = None
+        descriptor_bank, local_feature_bank = build_patch_search_bank(
+            retrieval_model,
+            patch_tensors,
+            device=device,
+        )
         scores, best_angles = score_query_bev_against_bank(
             query_bev=query_bev,
             encoder=retrieval_model.query_encoder,
@@ -260,6 +337,11 @@ def retrieve_topk_for_frame(
             device=device,
             classifier=retrieval_model.query_classifier,
             classifier_score_weight=single_cfg.classifier_score_weight,
+            local_matcher=retrieval_model.local_matcher,
+            local_feature_bank=local_feature_bank,
+            local_feature_level=retrieval_model.local_matcher_feature_level,
+            local_matcher_score_weight=single_cfg.local_matcher_score_weight,
+            local_matcher_rerank_topk=single_cfg.local_matcher_rerank_topk,
         )
     order = np.argsort(scores)[::-1][: single_cfg.topk]
     topk_patch_ids = patch_ids[order].astype(int).tolist()

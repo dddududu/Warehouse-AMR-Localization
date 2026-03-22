@@ -100,7 +100,10 @@ def evaluate_retrieval(
                 model.query_encoder.load_state_dict(state["query_encoder"])
                 model.patch_encoder.load_state_dict(state["patch_encoder"])
                 if model.query_classifier is not None and state.get("query_classifier") is not None:
-                    model.query_classifier.load_state_dict(state["query_classifier"])
+                    try:
+                        model.query_classifier.load_state_dict(state["query_classifier"], strict=False)
+                    except RuntimeError:
+                        model.query_classifier = None
                 if model.local_matcher is not None and state.get("local_matcher") is not None:
                     model.local_matcher.load_state_dict(state["local_matcher"], strict=False)
             model.eval()
@@ -218,7 +221,10 @@ def evaluate_retrieval(
                 model.query_encoder.load_state_dict(state["query_encoder"])
                 model.patch_encoder.load_state_dict(state["patch_encoder"])
                 if model.query_classifier is not None and state.get("query_classifier") is not None:
-                    model.query_classifier.load_state_dict(state["query_classifier"])
+                    try:
+                        model.query_classifier.load_state_dict(state["query_classifier"], strict=False)
+                    except RuntimeError:
+                        model.query_classifier = None
             model.eval()
         per_sequence_descriptor_bank: dict[str, np.ndarray] = {}
         per_sequence_local_feature_bank: dict[str, np.ndarray | None] = {}

@@ -133,7 +133,20 @@ class CoarseRetrievalDataset(Dataset):
             random_ids = rng.permutation(random_candidates)[: self.config.num_random_negative_patches]
         else:
             random_ids = np.empty((0,), dtype=np.int64)
-        return np.concatenate((hard_ids, random_ids), axis=0).astype(np.int64)
+        negative_ids = np.concatenate((hard_ids, random_ids), axis=0).astype(np.int64)
+        target_count = int(self.config.num_negative_patches)
+        if negative_ids.shape[0] < target_count:
+            rng = np.random.default_rng(seed=int(frame_seed) + 17)
+            fallback_candidates = np.flatnonzero(np.arange(len(patch_metadata)) != gt_patch_id)
+            if fallback_candidates.size == 0:
+                raise ValueError("No negative patch candidates are available for retrieval training.")
+            extra_ids = rng.choice(
+                fallback_candidates,
+                size=target_count - negative_ids.shape[0],
+                replace=fallback_candidates.size < (target_count - negative_ids.shape[0]),
+            ).astype(np.int64)
+            negative_ids = np.concatenate((negative_ids, extra_ids), axis=0)
+        return negative_ids[:target_count].astype(np.int64)
 
     def _augment_query_bev(self, bev_tensor: np.ndarray, frame_seed: int) -> np.ndarray:
         augmented = np.asarray(bev_tensor, dtype=np.float32).copy()

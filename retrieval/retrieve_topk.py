@@ -97,7 +97,10 @@ def _build_retrieval_model(
     if state.get("patch_encoder") is not None:
         retrieval_model.patch_encoder.load_state_dict(state["patch_encoder"])
     if retrieval_model.query_classifier is not None and state.get("query_classifier") is not None:
-        retrieval_model.query_classifier.load_state_dict(state["query_classifier"])
+        try:
+            retrieval_model.query_classifier.load_state_dict(state["query_classifier"], strict=False)
+        except RuntimeError:
+            retrieval_model.query_classifier = None
     if retrieval_model.local_matcher is not None and state.get("local_matcher") is not None:
         retrieval_model.local_matcher.load_state_dict(state["local_matcher"], strict=False)
     retrieval_model.eval()

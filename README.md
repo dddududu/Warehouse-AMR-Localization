@@ -9,6 +9,8 @@ LiDAR coarse retrieval pipeline for the TorWIC warehouse dataset.
 - Oct. 12 Aisle-CCW evaluation config: `configs/eval_oct12_aisle_ccw_multiday.yaml`
 - Local-rerank best training config: `configs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.yaml`
 - Local-rerank best eval config: `configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml`
+- Stride-10 classifier-head training config: `configs/coarse_retrieval_classifier_head_e2_stride10.yaml`
+- Stride-10 best eval config: `configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml`
 - Shared map/calibration follow the `Jun. 15, 2022` assets as requested.
 
 ## What changed
@@ -33,6 +35,10 @@ python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_mult
 python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.yaml --output-checkpoint outputs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.pt
 ```
 
+```bash
+python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_classifier_head_e2_stride10.yaml --output-checkpoint outputs/coarse_retrieval_classifier_head_e2_stride10.pt
+```
+
 ## Evaluate
 
 ```bash
@@ -43,18 +49,21 @@ python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_mul
 python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml --descriptor-bank outputs/descriptor_bank_oct12_aisle_ccw_top3_deg30.npz --checkpoint checkpoints/coarse_retrieval_localmatcher_stage3_hardrerank_e1_top1_0p4011_r3_0p6645.pt --output-json outputs/eval_oct12_aisle_ccw_localmatcher_stage3_hardrerank_best.json
 ```
 
+```bash
+python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml --checkpoint checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt --output-json outputs/eval_oct12_aisle_ccw_classifier_head_stride10.json
+```
+
 ## Best checkpoint
 
-- Repository path: `checkpoints/coarse_retrieval_localmatcher_stage3_hardrerank_e1_top1_0p4011_r3_0p6645.pt`
-- GitHub Release: `best-checkpoint-top1-0.4011`
+- Repository path: `checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt`
 - Matching report: `analysis/multiday_finetune_results.md`
 
 ## Best system
 
-- Ensemble eval config: `configs/eval_oct12_aisle_ccw_multiday_ensemble.yaml`
-- Overall best metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.3454`, `Recall@3=0.7421`, `MRR=0.5596`
+- Eval config: `configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml`
+- Overall best metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.4426`, `Recall@3=0.7672`, `MRR=0.6463`
 
-## Best single-model top-1
+## Best ensemble under stride-10 patches
 
-- Eval config: `configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml`
-- Best single-model metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.4011`, `Recall@3=0.6645`, `MRR=0.5720`
+- Eval config: `configs/eval_oct12_aisle_ccw_multiday_ensemble_stride10.yaml`
+- Metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.4087`, `Recall@3=0.7945`, `MRR=0.6310`

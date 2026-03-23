@@ -46,6 +46,7 @@ class CandidateLocalizationResult:
     bev_score: float
     icp_inlier_ratio: float
     icp_rmse: float
+    temporal_score: float
     final_score: float
     final_pose_4x4: np.ndarray
 
@@ -144,7 +145,43 @@ class FineLocalizer:
             for idx in ranking
         ]
 
-    def localize_frame(self, frame_idx: int) -> dict[str, Any]:
+    def _predict_pose_4x4(self, accepted_poses: list[np.ndarray]) -> np.ndarray | None:
+        if not accepted_poses:
+            return None
+        if len(accepted_poses) < 2 or not self.config.use_constant_velocity_prediction:
+            return np.asarray(accepted_poses[-1], dtype=np.float64).copy()
+        prev_pose = np.asarray(accepted_poses[-1], dtype=np.float64)
+        prev_prev_pose = np.asarray(accepted_poses[-2], dtype=np.float64)
+        prev_xy = prev_pose[:2, 3]
+        prev_prev_xy = prev_prev_pose[:2, 3]
+        predicted_xy = prev_xy + (prev_xy - prev_prev_xy)
+        prev_yaw = yaw_from_pose_matrix(prev_pose)
+        prev_prev_yaw = yaw_from_pose_matrix(prev_prev_pose)
+        predicted_yaw = float(prev_yaw + wrap_to_pi(prev_yaw - prev_prev_yaw))
+        predicted_pose = prev_pose.copy()
+        predicted_pose[:2, 3] = predicted_xy
+        predicted_pose[:3, :3] = pose_from_xy_yaw_z(0.0, 0.0, predicted_yaw)[:3, :3]
+        return predicted_pose
+
+    def _temporal_score(self, pose_4x4: np.ndarray, predicted_pose_4x4: np.ndarray | None) -> float:
+        if predicted_pose_4x4 is None or float(self.config.temporal_weight) <= 0.0:
+            return 0.0
+        predicted_xy = np.asarray(predicted_pose_4x4[:2, 3], dtype=np.float64)
+        current_xy = np.asarray(pose_4x4[:2, 3], dtype=np.float64)
+        xy_error = float(np.linalg.norm(current_xy - predicted_xy))
+        current_yaw = yaw_from_pose_matrix(pose_4x4)
+        predicted_yaw = yaw_from_pose_matrix(predicted_pose_4x4)
+        yaw_error_deg = abs(math.degrees(float(wrap_to_pi(current_yaw - predicted_yaw))))
+        sigma_xy = max(float(self.config.temporal_position_sigma_m), 1.0e-6)
+        sigma_yaw = max(float(self.config.temporal_yaw_sigma_deg), 1.0e-6)
+        return float(
+            math.exp(
+                -0.5 * (xy_error / sigma_xy) ** 2
+                -0.5 * (yaw_error_deg / sigma_yaw) ** 2
+            )
+        )
+
+    def localize_frame(self, frame_idx: int, predicted_pose_4x4: np.ndarray | None = None) -> dict[str, Any]:
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
         candidate_results: list[CandidateLocalizationResult] = []
@@ -183,11 +220,13 @@ class FineLocalizer:
                 max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
                 min_correspondences=self.config.icp_min_correspondences,
             )
+            temporal_score = self._temporal_score(icp_result.pose_4x4, predicted_pose_4x4)
             final_score = (
                 float(self.config.retrieval_score_weight) * float(candidate["score"])
                 + float(self.config.bev_score_weight) * float(bev_match.score)
                 + float(self.config.icp_inlier_weight) * float(icp_result.inlier_ratio)
                 - float(self.config.icp_rmse_weight) * float(icp_result.rmse if np.isfinite(icp_result.rmse) else 10.0)
+                + float(self.config.temporal_weight) * float(temporal_score)
             )
             candidate_results.append(
                 CandidateLocalizationResult(
@@ -199,6 +238,7 @@ class FineLocalizer:
                     bev_score=float(bev_match.score),
                     icp_inlier_ratio=float(icp_result.inlier_ratio),
                     icp_rmse=float(icp_result.rmse),
+                    temporal_score=float(temporal_score),
                     final_score=float(final_score),
                     final_pose_4x4=icp_result.pose_4x4.copy(),
                 )
@@ -217,6 +257,7 @@ class FineLocalizer:
             "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
             "best_patch_id": int(best_candidate.patch_id),
             "pred_pose_4x4": best_candidate.final_pose_4x4.tolist(),
+            "predicted_pose_4x4_from_tracker": predicted_pose_4x4.tolist() if predicted_pose_4x4 is not None else None,
             "position_error_m": position_error_m,
             "yaw_error_deg": float(math.degrees(abs(yaw_error_rad))),
             "candidate_results": [
@@ -247,7 +288,13 @@ def localize_sequence(
         int(frame_start) + int(num_frames),
     )
     frame_indices = list(range(int(frame_start), last_frame, max(1, int(frame_stride))))
-    frame_results = [localizer.localize_frame(frame_idx) for frame_idx in frame_indices]
+    frame_results: list[dict[str, Any]] = []
+    accepted_poses: list[np.ndarray] = []
+    for frame_idx in frame_indices:
+        predicted_pose_4x4 = localizer._predict_pose_4x4(accepted_poses)
+        frame_result = localizer.localize_frame(frame_idx, predicted_pose_4x4=predicted_pose_4x4)
+        frame_results.append(frame_result)
+        accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))
     position_errors = np.asarray([item["position_error_m"] for item in frame_results], dtype=np.float64)
     yaw_errors = np.asarray([item["yaw_error_deg"] for item in frame_results], dtype=np.float64)
     report = {

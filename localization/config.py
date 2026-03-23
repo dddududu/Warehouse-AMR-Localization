@@ -28,6 +28,10 @@ class FineLocalizationConfig:
     bev_score_weight: float = 0.35
     icp_inlier_weight: float = 0.35
     icp_rmse_weight: float = 0.10
+    temporal_weight: float = 0.0
+    temporal_position_sigma_m: float = 1.5
+    temporal_yaw_sigma_deg: float = 20.0
+    use_constant_velocity_prediction: bool = True
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FineLocalizationConfig":

@@ -59,11 +59,20 @@ python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_cla
 python -m localization.fine_localizer --config configs/fine_localization_oct12_aisle_ccw.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_50f.json
 ```
 
+```bash
+python -m localization.fine_localizer --config configs/fine_localization_oct12_aisle_cw.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_cw_50f.json
+```
+
 - Fine localization pipeline: `topK patch retrieval -> local submap BEV correlation -> ICP refinement`
+- Trajectory mode adds temporal consistency reranking with constant-velocity prediction
 - Validated on `Oct. 12, 2022 / Aisle_CCW` first 50 frames:
   - mean position error: `0.1845 m`
   - median position error: `0.1827 m`
   - mean yaw error: `0.7102 deg`
+- Validated on `Oct. 12, 2022 / Aisle_CW` first 50 frames:
+  - mean position error: `0.1577 m`
+  - median position error: `0.1600 m`
+  - mean yaw error: `0.4676 deg`
 
 ## Best checkpoint
 

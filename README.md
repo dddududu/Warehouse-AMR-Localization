@@ -53,6 +53,18 @@ python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_loc
 python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml --checkpoint checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt --output-json outputs/eval_oct12_aisle_ccw_classifier_head_stride10.json
 ```
 
+## Fine Localization
+
+```bash
+python -m localization.fine_localizer --config configs/fine_localization_oct12_aisle_ccw.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_50f.json
+```
+
+- Fine localization pipeline: `topK patch retrieval -> local submap BEV correlation -> ICP refinement`
+- Validated on `Oct. 12, 2022 / Aisle_CCW` first 50 frames:
+  - mean position error: `0.1845 m`
+  - median position error: `0.1827 m`
+  - mean yaw error: `0.7102 deg`
+
 ## Best checkpoint
 
 - Repository path: `checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt`

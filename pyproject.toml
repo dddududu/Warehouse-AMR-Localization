@@ -28,6 +28,7 @@ packages = [
   "calibration",
   "dataset_io",
   "geometry",
+  "localization",
   "losses",
   "models",
   "preprocess",

@@ -43,4 +43,4 @@ This directory is used to store the best reproducible checkpoint in the repo bec
 
 - the file is small enough for normal Git storage;
 - `outputs/` is intentionally ignored;
-- the same best checkpoint should also be published in a matching GitHub Release.
+- the same best checkpoint is also published in GitHub Release `best-checkpoint-top1-0.4426`.

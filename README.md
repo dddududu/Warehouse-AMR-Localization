@@ -56,6 +56,7 @@ python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_cla
 ## Best checkpoint
 
 - Repository path: `checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt`
+- GitHub Release: `best-checkpoint-top1-0.4426`
 - Matching report: `analysis/multiday_finetune_results.md`
 
 ## Best system

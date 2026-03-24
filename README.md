@@ -85,6 +85,24 @@ python -m localization.fine_localizer --config configs/fine_localization_oct12_a
   - mean yaw error: `29.4770 deg`
   - frames below `1m`: `65.20%`
 
+## Deep Fine Localization (Experimental)
+
+```bash
+python -m trainers.train_fine_pose_matcher --config configs/fine_pose_matcher_train.yaml --output-checkpoint outputs/fine_pose_matcher_v1.pt
+```
+
+```bash
+python -m localization.deep_fine_localizer --config configs/fine_localization_oct12_aisle_ccw_deep.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_deep_50f.json
+```
+
+- Model path: `models/fine_pose_matcher.py`
+- Training dataset: `dataset_io/fine_localization_dataset.py`
+- First version uses `query BEV + candidate submap BEV -> match score + relative pose -> ICP`
+- Current `Aisle_CCW` 50-frame result with `outputs/fine_pose_matcher_v1.pt` is not yet better than the geometric pipeline:
+  - mean position error: `1.9704 m`
+  - median position error: `1.9645 m`
+  - mean yaw error: `50.4744 deg`
+
 ## Best checkpoint
 
 - Repository path: `checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt`

@@ -40,6 +40,9 @@ class FineLocalizationConfig:
     sequence_smoothing_position_sigma_m: float = 2.0
     sequence_smoothing_yaw_sigma_deg: float = 30.0
     sequence_smoothing_stay_bonus: float = 0.3
+    deep_matcher_checkpoint_path: str | None = None
+    deep_matcher_score_weight: float = 0.35
+    deep_pose_confidence_weight: float = 0.10
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FineLocalizationConfig":

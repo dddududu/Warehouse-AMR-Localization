@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from runtime_compat import ensure_runtime_compatibility
+
+ensure_runtime_compatibility()
+
+import numpy as np
+import torch
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+
+from dataset_io.fine_localization_dataset import DeepFineLocalizationDataset
+from localization.deep_config import load_deep_fine_matcher_train_config
+from models.fine_pose_matcher import FinePoseMatcher
+from retrieval.config import load_coarse_retrieval_config
+
+
+def _evaluate_matcher(
+    model: FinePoseMatcher,
+    dataset: DeepFineLocalizationDataset,
+    device: torch.device,
+) -> dict[str, float | int | None]:
+    if len(dataset) == 0:
+        return {"num_val_frames": 0, "match_accuracy": None, "pose_l1_mean": None}
+    model.eval()
+    correct = 0
+    pose_errors: list[float] = []
+    with torch.no_grad():
+        for sample_idx in range(len(dataset)):
+            sample = dataset[sample_idx]
+            query_bev = sample["query_bev"][None].to(device).float()
+            positive_candidate_bev = sample["positive_candidate_bev"][None].to(device).float()
+            negative_candidate_bevs = sample["negative_candidate_bevs"].to(device).float()
+            outputs_pos = model(query_bev, positive_candidate_bev)
+            if negative_candidate_bevs.shape[0] > 0:
+                repeated_query = query_bev.repeat(negative_candidate_bevs.shape[0], 1, 1, 1)
+                outputs_neg = model(repeated_query, negative_candidate_bevs)
+                negative_max = float(outputs_neg["match_logit"].max().item())
+            else:
+                negative_max = float("-inf")
+            if float(outputs_pos["match_logit"].item()) > negative_max:
+                correct += 1
+            pose_error = torch.abs(outputs_pos["pose"].cpu() - sample["positive_pose_target"][None]).mean().item()
+            pose_errors.append(float(pose_error))
+    return {
+        "num_val_frames": int(len(dataset)),
+        "match_accuracy": correct / max(1, len(dataset)),
+        "pose_l1_mean": float(np.mean(pose_errors)) if pose_errors else None,
+    }
+
+
+def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None) -> dict:
+    cfg = load_deep_fine_matcher_train_config(config)
+    coarse_cfg = load_coarse_retrieval_config(cfg.coarse_config_path)
+    train_entries, val_entries = coarse_cfg.split_sequence_entries()
+    train_dataset = DeepFineLocalizationDataset(cfg, sequence_entries=train_entries, max_samples=cfg.max_train_samples)
+    val_dataset = DeepFineLocalizationDataset(cfg, sequence_entries=val_entries, max_samples=cfg.max_val_samples)
+    device = torch.device(cfg.device)
+    amp_enabled = bool(cfg.use_amp and device.type == "cuda")
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=cfg.train_batch_size,
+        shuffle=True,
+        num_workers=max(0, int(cfg.train_num_workers)),
+        pin_memory=device.type == "cuda",
+        persistent_workers=bool(int(cfg.train_num_workers) > 0),
+    )
+    model = FinePoseMatcher(
+        descriptor_dim=cfg.descriptor_dim,
+        hidden_dim=cfg.hidden_dim,
+        local_submap_size_m=cfg.local_submap_size_m,
+    ).to(device)
+    if cfg.init_checkpoint_path:
+        state = torch.load(cfg.init_checkpoint_path, map_location=device)
+        if state.get("model") is not None:
+            model.load_state_dict(state["model"], strict=False)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+    scaler = torch.amp.GradScaler(device=device.type, enabled=amp_enabled)
+    scheduler = (
+        torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.lr_decay_gamma)
+        if cfg.lr_decay_gamma < 0.999999
+        else None
+    )
+    validation_history: list[dict] = []
+    history: list[float] = []
+    best_metric = -1.0
+    best_state: dict | None = None
+    for epoch_idx in range(cfg.train_epochs):
+        model.train()
+        epoch_losses: list[float] = []
+        for batch in dataloader:
+            query_bev = batch["query_bev"].to(device).float()
+            positive_candidate_bev = batch["positive_candidate_bev"].to(device).float()
+            negative_candidate_bevs = batch["negative_candidate_bevs"].to(device).float()
+            positive_pose_target = batch["positive_pose_target"].to(device).float()
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+                outputs_pos = model(query_bev, positive_candidate_bev)
+                positive_labels = torch.ones_like(outputs_pos["match_logit"])
+                match_loss = F.binary_cross_entropy_with_logits(outputs_pos["match_logit"], positive_labels)
+                if negative_candidate_bevs.shape[1] > 0:
+                    batch_size, num_neg, channels, height, width = negative_candidate_bevs.shape
+                    flat_negative_bevs = negative_candidate_bevs.reshape(batch_size * num_neg, channels, height, width)
+                    repeated_query_bev = query_bev[:, None].repeat(1, num_neg, 1, 1, 1).reshape(
+                        batch_size * num_neg,
+                        query_bev.shape[1],
+                        query_bev.shape[2],
+                        query_bev.shape[3],
+                    )
+                    outputs_neg = model(repeated_query_bev, flat_negative_bevs)
+                    negative_labels = torch.zeros_like(outputs_neg["match_logit"])
+                    match_loss = match_loss + F.binary_cross_entropy_with_logits(
+                        outputs_neg["match_logit"],
+                        negative_labels,
+                    )
+                pose_loss = F.smooth_l1_loss(outputs_pos["pose"], positive_pose_target)
+                confidence_target = torch.exp(-torch.abs(outputs_pos["pose"] - positive_pose_target).mean(dim=1))
+                confidence_loss = F.mse_loss(outputs_pos["pose_confidence"], confidence_target)
+                loss = (
+                    float(cfg.match_loss_weight) * match_loss
+                    + float(cfg.pose_loss_weight) * pose_loss
+                    + 0.1 * confidence_loss
+                )
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            epoch_losses.append(float(loss.item()))
+            history.append(float(loss.item()))
+        if scheduler is not None:
+            scheduler.step()
+        epoch_report: dict[str, object] = {
+            "epoch": epoch_idx + 1,
+            "train_loss_mean": float(np.mean(epoch_losses)) if epoch_losses else None,
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        }
+        if (epoch_idx + 1) % cfg.eval_every_epochs == 0:
+            metrics = _evaluate_matcher(model, val_dataset, device=device)
+            metrics["epoch"] = epoch_idx + 1
+            validation_history.append(metrics)
+            epoch_report["validation"] = metrics
+            metric_value = float(metrics["match_accuracy"] or 0.0)
+            if metric_value >= best_metric:
+                best_metric = metric_value
+                best_state = {
+                    "model": model.state_dict(),
+                    "history": history.copy(),
+                    "validation_history": validation_history.copy(),
+                    "config": cfg.__dict__,
+                }
+        print(json.dumps(epoch_report))
+    final_state = {
+        "model": model.state_dict(),
+        "history": history,
+        "validation_history": validation_history,
+        "config": cfg.__dict__,
+    }
+    payload = best_state if (cfg.save_best_only and best_state is not None) else final_state
+    checkpoint_path = Path(output_checkpoint) if output_checkpoint is not None else Path(cfg.cache_dir) / "fine_pose_matcher.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, checkpoint_path)
+    result = {
+        "checkpoint_path": str(checkpoint_path),
+        "num_steps": len(history),
+        "final_loss": history[-1] if history else None,
+        "validation_history": validation_history,
+        "num_train_frames": int(len(train_dataset)),
+        "num_val_frames": int(len(val_dataset)),
+        "train_sequences": [entry["sequence_name"] for entry in train_entries],
+        "val_sequences": [entry["sequence_name"] for entry in val_entries],
+    }
+    print(json.dumps(result, indent=2))
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the deep fine pose matcher.")
+    parser.add_argument("--config", default="configs/fine_pose_matcher_train.yaml")
+    parser.add_argument("--output-checkpoint", default=None)
+    args = parser.parse_args()
+    train_fine_pose_matcher(args.config, output_checkpoint=args.output_checkpoint)
+
+
+if __name__ == "__main__":
+    main()

@@ -32,6 +32,8 @@ class DeepFineLocalizer(FineLocalizer):
             descriptor_dim=int(checkpoint_config.get("descriptor_dim", 128)),
             hidden_dim=int(checkpoint_config.get("hidden_dim", 128)),
             local_submap_size_m=float(checkpoint_config.get("local_submap_size_m", self.config.local_submap_size_m)),
+            num_xy_bins=int(checkpoint_config.get("num_xy_bins", 31)),
+            num_yaw_bins=int(checkpoint_config.get("num_yaw_bins", 72)),
         ).to(self.device)
         self.deep_model.load_state_dict(checkpoint["model"], strict=True)
         self.deep_model.eval()

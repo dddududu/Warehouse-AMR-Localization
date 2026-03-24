@@ -19,6 +19,8 @@ class DeepFineMatcherTrainConfig:
     hard_negative_max_distance_m: float = 30.0
     descriptor_dim: int = 128
     hidden_dim: int = 128
+    num_xy_bins: int = 31
+    num_yaw_bins: int = 72
     train_batch_size: int = 8
     train_num_workers: int = 0
     train_epochs: int = 4

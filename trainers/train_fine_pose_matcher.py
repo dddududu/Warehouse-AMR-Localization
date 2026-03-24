@@ -19,6 +19,37 @@ from models.fine_pose_matcher import FinePoseMatcher
 from retrieval.config import load_coarse_retrieval_config
 
 
+def _quantize_targets(
+    pose_targets: torch.Tensor,
+    model: FinePoseMatcher,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    x_targets = pose_targets[:, 0]
+    y_targets = pose_targets[:, 1]
+    yaw_targets = pose_targets[:, 2]
+    x_distances = torch.abs(x_targets[:, None] - model.xy_bin_centers[None, :].to(pose_targets.device))
+    y_distances = torch.abs(y_targets[:, None] - model.xy_bin_centers[None, :].to(pose_targets.device))
+    yaw_diff = torch.atan2(
+        torch.sin(yaw_targets[:, None] - model.yaw_bin_centers[None, :].to(pose_targets.device)),
+        torch.cos(yaw_targets[:, None] - model.yaw_bin_centers[None, :].to(pose_targets.device)),
+    ).abs()
+    x_bin_idx = torch.argmin(x_distances, dim=1)
+    y_bin_idx = torch.argmin(y_distances, dim=1)
+    yaw_bin_idx = torch.argmin(yaw_diff, dim=1)
+    x_center = model.xy_bin_centers.to(pose_targets.device)[x_bin_idx]
+    y_center = model.xy_bin_centers.to(pose_targets.device)[y_bin_idx]
+    yaw_center = model.yaw_bin_centers.to(pose_targets.device)[yaw_bin_idx]
+    residual_targets = torch.stack(
+        (
+            (x_targets - x_center) / max(model.xy_bin_width * 0.5, 1.0e-6),
+            (y_targets - y_center) / max(model.xy_bin_width * 0.5, 1.0e-6),
+            torch.atan2(torch.sin(yaw_targets - yaw_center), torch.cos(yaw_targets - yaw_center))
+            / max(model.yaw_bin_width * 0.5, 1.0e-6),
+        ),
+        dim=1,
+    ).clamp(min=-1.0, max=1.0)
+    return x_bin_idx, y_bin_idx, yaw_bin_idx, residual_targets
+
+
 def _evaluate_matcher(
     model: FinePoseMatcher,
     dataset: DeepFineLocalizationDataset,
@@ -71,6 +102,8 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
         descriptor_dim=cfg.descriptor_dim,
         hidden_dim=cfg.hidden_dim,
         local_submap_size_m=cfg.local_submap_size_m,
+        num_xy_bins=cfg.num_xy_bins,
+        num_yaw_bins=cfg.num_yaw_bins,
     ).to(device)
     if cfg.init_checkpoint_path:
         state = torch.load(cfg.init_checkpoint_path, map_location=device)
@@ -102,7 +135,26 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
                 gather_index = gt_candidate_index[:, None, None].expand(-1, 1, 3)
                 selected_pose = outputs["pose"].gather(1, gather_index).squeeze(1)
                 selected_target = candidate_pose_targets.gather(1, gather_index).squeeze(1)
-                pose_loss = F.smooth_l1_loss(selected_pose, selected_target)
+                x_bin_idx, y_bin_idx, yaw_bin_idx, residual_targets = _quantize_targets(selected_target, model)
+                x_logits = outputs["x_bin_logits"].gather(
+                    1,
+                    gt_candidate_index[:, None, None].expand(-1, 1, outputs["x_bin_logits"].shape[-1]),
+                ).squeeze(1)
+                y_logits = outputs["y_bin_logits"].gather(
+                    1,
+                    gt_candidate_index[:, None, None].expand(-1, 1, outputs["y_bin_logits"].shape[-1]),
+                ).squeeze(1)
+                yaw_logits = outputs["yaw_bin_logits"].gather(
+                    1,
+                    gt_candidate_index[:, None, None].expand(-1, 1, outputs["yaw_bin_logits"].shape[-1]),
+                ).squeeze(1)
+                residual_pred = outputs["pose_residual"].gather(1, gather_index).squeeze(1)
+                pose_loss = (
+                    F.cross_entropy(x_logits, x_bin_idx)
+                    + F.cross_entropy(y_logits, y_bin_idx)
+                    + F.cross_entropy(yaw_logits, yaw_bin_idx)
+                    + F.smooth_l1_loss(torch.tanh(residual_pred), residual_targets)
+                )
                 selected_confidence = outputs["pose_confidence"].gather(1, gt_candidate_index[:, None]).squeeze(1)
                 confidence_target = torch.exp(-torch.abs(selected_pose - selected_target).mean(dim=1))
                 confidence_loss = F.mse_loss(selected_confidence, confidence_target)

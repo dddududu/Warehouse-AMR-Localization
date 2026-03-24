@@ -8,6 +8,8 @@ hard_negative_min_distance_m: 5.0
 hard_negative_max_distance_m: 30.0
 descriptor_dim: 64
 hidden_dim: 64
+num_xy_bins: 31
+num_yaw_bins: 72
 train_batch_size: 4
 train_num_workers: 0
 train_epochs: 1

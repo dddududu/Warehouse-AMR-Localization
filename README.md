@@ -109,6 +109,12 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
     - `outputs/fine_localization_oct12_aisle_ccw_deep_v2_50f.json`
     - mean position error: `1.9640 m`
     - mean yaw error: `60.7309 deg`
+- V3 switches the pose head to `x/y/yaw` bin classification + residual decoding:
+  - current validation candidate classification accuracy: `50.16%`
+  - current `Aisle_CCW` 50-frame result:
+    - `outputs/fine_localization_oct12_aisle_ccw_deep_v3_50f.json`
+    - mean position error: `10.6707 m`
+    - mean yaw error: `53.8335 deg`
 
 ## Best checkpoint
 

@@ -1,7 +1,7 @@
 coarse_config_path: "configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml"
 coarse_checkpoint_path: "checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt"
 descriptor_bank_path: "./cache/eval_oct12_aisle_ccw_classifier_head_stride10/descriptor_bank_Aisle_CCW.npz"
-deep_matcher_checkpoint_path: "outputs/fine_pose_matcher_v2.pt"
+deep_matcher_checkpoint_path: "outputs/fine_pose_matcher_v3.pt"
 output_json: "outputs/fine_localization_oct12_aisle_ccw_deep.json"
 topk_candidates: 5
 local_submap_size_m: 30.0

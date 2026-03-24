@@ -21,3 +21,7 @@ temporal_weight: 0.20
 temporal_position_sigma_m: 1.5
 temporal_yaw_sigma_deg: 20.0
 use_constant_velocity_prediction: true
+use_sequence_smoothing: true
+sequence_smoothing_position_sigma_m: 2.0
+sequence_smoothing_yaw_sigma_deg: 30.0
+sequence_smoothing_stay_bonus: 0.3

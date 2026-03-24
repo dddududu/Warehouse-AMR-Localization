@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from geometry.se3 import compose_transform, transform_points
@@ -98,13 +99,20 @@ def refine_pose_with_icp(
     best_num_inliers = 0
     best_rmse = float("inf")
     converged = False
+    flann_index = cv2.flann_Index(
+        np.asarray(map_down, dtype=np.float32),
+        {"algorithm": 1, "trees": 4},
+    )
 
     for iteration_idx in range(max(1, int(max_iterations))):
         transformed_query = transform_points(pose, query_down).astype(np.float64)
-        diff = transformed_query[:, None, :] - map_down[None, :, :].astype(np.float64)
-        squared_distances = np.sum(diff * diff, axis=2)
-        nearest_indices = np.argmin(squared_distances, axis=1)
-        nearest_sq = squared_distances[np.arange(squared_distances.shape[0]), nearest_indices]
+        nearest_indices, nearest_sq = flann_index.knnSearch(
+            np.asarray(transformed_query, dtype=np.float32),
+            1,
+            params={},
+        )
+        nearest_sq = nearest_sq.reshape(-1).astype(np.float64)
+        nearest_indices = nearest_indices.reshape(-1).astype(np.int64)
         inlier_mask = nearest_sq <= max_corr_sq
         num_inliers = int(np.count_nonzero(inlier_mask))
         if num_inliers < int(min_correspondences):

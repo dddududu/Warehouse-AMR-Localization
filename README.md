@@ -65,14 +65,25 @@ python -m localization.fine_localizer --config configs/fine_localization_oct12_a
 
 - Fine localization pipeline: `topK patch retrieval -> local submap BEV correlation -> ICP refinement`
 - Trajectory mode adds temporal consistency reranking with constant-velocity prediction
+- Full-sequence mode adds Viterbi sequence smoothing over top-k fine-localization candidates
 - Validated on `Oct. 12, 2022 / Aisle_CCW` first 50 frames:
-  - mean position error: `0.1845 m`
-  - median position error: `0.1827 m`
-  - mean yaw error: `0.7102 deg`
+  - mean position error: `0.1784 m`
+  - median position error: `0.1793 m`
+  - mean yaw error: `0.6855 deg`
 - Validated on `Oct. 12, 2022 / Aisle_CW` first 50 frames:
-  - mean position error: `0.1577 m`
-  - median position error: `0.1600 m`
-  - mean yaw error: `0.4676 deg`
+  - mean position error: `0.1449 m`
+  - median position error: `0.1432 m`
+  - mean yaw error: `0.4504 deg`
+- Full `Oct. 12, 2022 / Aisle_CCW` with sequence smoothing:
+  - mean position error: `2.6486 m`
+  - median position error: `0.1645 m`
+  - mean yaw error: `39.4893 deg`
+  - frames below `1m`: `63.28%`
+- Full `Oct. 12, 2022 / Aisle_CW` with sequence smoothing:
+  - mean position error: `2.0649 m`
+  - median position error: `0.1388 m`
+  - mean yaw error: `29.4770 deg`
+  - frames below `1m`: `65.20%`
 
 ## Best checkpoint
 

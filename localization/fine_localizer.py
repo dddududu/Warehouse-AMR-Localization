@@ -5,7 +5,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 from runtime_compat import ensure_runtime_compatibility
@@ -46,6 +46,10 @@ class CandidateLocalizationResult:
     bev_score: float
     icp_inlier_ratio: float
     icp_rmse: float
+    icp_valid: bool
+    temporal_position_jump_m: float | None
+    temporal_yaw_jump_deg: float | None
+    temporal_gate_valid: bool
     temporal_score: float
     final_score: float
     final_pose_4x4: np.ndarray
@@ -181,6 +185,34 @@ class FineLocalizer:
             )
         )
 
+    def _temporal_jump_metrics(
+        self,
+        pose_4x4: np.ndarray,
+        predicted_pose_4x4: np.ndarray | None,
+    ) -> tuple[float | None, float | None]:
+        if predicted_pose_4x4 is None:
+            return None, None
+        predicted_xy = np.asarray(predicted_pose_4x4[:2, 3], dtype=np.float64)
+        current_xy = np.asarray(pose_4x4[:2, 3], dtype=np.float64)
+        xy_jump_m = float(np.linalg.norm(current_xy - predicted_xy))
+        current_yaw = yaw_from_pose_matrix(pose_4x4)
+        predicted_yaw = yaw_from_pose_matrix(predicted_pose_4x4)
+        yaw_jump_deg = abs(math.degrees(float(wrap_to_pi(current_yaw - predicted_yaw))))
+        return xy_jump_m, yaw_jump_deg
+
+    def _is_temporal_gate_valid(
+        self,
+        xy_jump_m: float | None,
+        yaw_jump_deg: float | None,
+    ) -> bool:
+        max_xy_jump = self.config.max_temporal_position_jump_m
+        max_yaw_jump = self.config.max_temporal_yaw_jump_deg
+        if xy_jump_m is not None and max_xy_jump is not None and xy_jump_m > float(max_xy_jump):
+            return False
+        if yaw_jump_deg is not None and max_yaw_jump is not None and yaw_jump_deg > float(max_yaw_jump):
+            return False
+        return True
+
     def localize_frame(self, frame_idx: int, predicted_pose_4x4: np.ndarray | None = None) -> dict[str, Any]:
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
@@ -220,14 +252,30 @@ class FineLocalizer:
                 max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
                 min_correspondences=self.config.icp_min_correspondences,
             )
-            temporal_score = self._temporal_score(icp_result.pose_4x4, predicted_pose_4x4)
+            icp_valid = bool(
+                icp_result.num_inliers >= int(self.config.icp_min_correspondences)
+                and np.isfinite(icp_result.rmse)
+            )
+            candidate_pose = icp_result.pose_4x4 if icp_valid else initial_pose
+            temporal_position_jump_m, temporal_yaw_jump_deg = self._temporal_jump_metrics(
+                candidate_pose,
+                predicted_pose_4x4,
+            )
+            temporal_gate_valid = self._is_temporal_gate_valid(
+                temporal_position_jump_m,
+                temporal_yaw_jump_deg,
+            )
+            temporal_score = self._temporal_score(candidate_pose, predicted_pose_4x4)
             final_score = (
                 float(self.config.retrieval_score_weight) * float(candidate["score"])
                 + float(self.config.bev_score_weight) * float(bev_match.score)
                 + float(self.config.icp_inlier_weight) * float(icp_result.inlier_ratio)
                 - float(self.config.icp_rmse_weight) * float(icp_result.rmse if np.isfinite(icp_result.rmse) else 10.0)
                 + float(self.config.temporal_weight) * float(temporal_score)
+                - (0.0 if icp_valid else float(self.config.invalid_icp_penalty))
             )
+            if predicted_pose_4x4 is not None and not temporal_gate_valid:
+                final_score = -1.0e9
             candidate_results.append(
                 CandidateLocalizationResult(
                     patch_id=int(candidate["patch_id"]),
@@ -238,14 +286,53 @@ class FineLocalizer:
                     bev_score=float(bev_match.score),
                     icp_inlier_ratio=float(icp_result.inlier_ratio),
                     icp_rmse=float(icp_result.rmse),
+                    icp_valid=icp_valid,
+                    temporal_position_jump_m=temporal_position_jump_m,
+                    temporal_yaw_jump_deg=temporal_yaw_jump_deg,
+                    temporal_gate_valid=temporal_gate_valid,
                     temporal_score=float(temporal_score),
                     final_score=float(final_score),
-                    final_pose_4x4=icp_result.pose_4x4.copy(),
+                    final_pose_4x4=candidate_pose.copy(),
                 )
             )
 
         best_candidate = max(candidate_results, key=lambda item: item.final_score)
         gt_pose = self.sequence_dataset.ground_truth.poses_4x4[frame_idx]
+        if (
+            predicted_pose_4x4 is not None
+            and bool(self.config.fallback_to_predicted_pose_on_invalid)
+            and not any(item.icp_valid and item.temporal_gate_valid for item in candidate_results)
+        ):
+            fallback_pose = np.asarray(predicted_pose_4x4, dtype=np.float64).copy()
+            fallback_yaw_rad = float(
+                wrap_to_pi(yaw_from_pose_matrix(fallback_pose) - yaw_from_pose_matrix(gt_pose))
+            )
+            pred_xy = fallback_pose[:2, 3]
+            gt_xy = gt_pose[:2, 3]
+            return {
+                "frame_idx": int(frame_idx),
+                "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
+                "best_patch_id": int(best_candidate.patch_id),
+                "pred_pose_4x4": fallback_pose.tolist(),
+                "predicted_pose_4x4_from_tracker": predicted_pose_4x4.tolist(),
+                "position_error_m": float(np.linalg.norm(pred_xy - gt_xy)),
+                "yaw_error_deg": float(math.degrees(abs(fallback_yaw_rad))),
+                "used_tracker_fallback": True,
+                "selection_mode": "online_best",
+                "selected_candidate_index": 0,
+                "candidate_results": [
+                    {
+                        **{
+                            key: value
+                            for key, value in asdict(item).items()
+                            if key != "final_pose_4x4"
+                        },
+                        "final_pose_4x4": item.final_pose_4x4.tolist(),
+                    }
+                    for item in sorted(candidate_results, key=lambda item: item.final_score, reverse=True)
+                ],
+            }
+
         gt_xy = gt_pose[:2, 3]
         pred_xy = best_candidate.final_pose_4x4[:2, 3]
         position_error_m = float(np.linalg.norm(pred_xy - gt_xy))
@@ -260,6 +347,9 @@ class FineLocalizer:
             "predicted_pose_4x4_from_tracker": predicted_pose_4x4.tolist() if predicted_pose_4x4 is not None else None,
             "position_error_m": position_error_m,
             "yaw_error_deg": float(math.degrees(abs(yaw_error_rad))),
+            "used_tracker_fallback": False,
+            "selection_mode": "online_best",
+            "selected_candidate_index": 0,
             "candidate_results": [
                 {
                     **{
@@ -273,6 +363,117 @@ class FineLocalizer:
             ],
         }
         return result
+
+    def _candidate_unary_score(self, candidate: Mapping[str, Any]) -> float:
+        rmse = float(candidate["icp_rmse"]) if np.isfinite(candidate["icp_rmse"]) else 10.0
+        score = (
+            float(self.config.retrieval_score_weight) * float(candidate["coarse_score"])
+            + float(self.config.bev_score_weight) * float(candidate["bev_score"])
+            + float(self.config.icp_inlier_weight) * float(candidate["icp_inlier_ratio"])
+            - float(self.config.icp_rmse_weight) * rmse
+        )
+        if not bool(candidate.get("icp_valid", True)):
+            score -= float(self.config.invalid_icp_penalty)
+        return float(score)
+
+    @staticmethod
+    def _transition_score(
+        prev_candidate: Mapping[str, Any],
+        current_candidate: Mapping[str, Any],
+        position_sigma_m: float,
+        yaw_sigma_deg: float,
+        stay_bonus: float,
+    ) -> float:
+        prev_pose = np.asarray(prev_candidate["final_pose_4x4"], dtype=np.float64)
+        current_pose = np.asarray(current_candidate["final_pose_4x4"], dtype=np.float64)
+        xy_jump_m = float(np.linalg.norm(current_pose[:2, 3] - prev_pose[:2, 3]))
+        yaw_jump_deg = abs(
+            math.degrees(
+                float(
+                    wrap_to_pi(
+                        yaw_from_pose_matrix(current_pose) - yaw_from_pose_matrix(prev_pose)
+                    )
+                )
+            )
+        )
+        score = (
+            -0.5 * (xy_jump_m / max(position_sigma_m, 1.0e-6)) ** 2
+            -0.5 * (yaw_jump_deg / max(yaw_sigma_deg, 1.0e-6)) ** 2
+        )
+        if int(prev_candidate["patch_id"]) == int(current_candidate["patch_id"]):
+            score += float(stay_bonus)
+        return float(score)
+
+    def _apply_sequence_smoothing(self, frame_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not frame_results or not bool(self.config.use_sequence_smoothing):
+            return frame_results
+        dp_scores: list[np.ndarray] = []
+        backpointers: list[np.ndarray] = []
+        first_candidates = frame_results[0]["candidate_results"]
+        dp_scores.append(
+            np.asarray(
+                [self._candidate_unary_score(candidate) for candidate in first_candidates],
+                dtype=np.float64,
+            )
+        )
+        backpointers.append(np.full(len(first_candidates), -1, dtype=np.int32))
+        position_sigma_m = float(self.config.sequence_smoothing_position_sigma_m)
+        yaw_sigma_deg = float(self.config.sequence_smoothing_yaw_sigma_deg)
+        stay_bonus = float(self.config.sequence_smoothing_stay_bonus)
+        for frame_idx in range(1, len(frame_results)):
+            previous_candidates = frame_results[frame_idx - 1]["candidate_results"]
+            current_candidates = frame_results[frame_idx]["candidate_results"]
+            current_dp = np.full(len(current_candidates), -1.0e18, dtype=np.float64)
+            current_backpointer = np.full(len(current_candidates), -1, dtype=np.int32)
+            for current_idx, current_candidate in enumerate(current_candidates):
+                unary_score = self._candidate_unary_score(current_candidate)
+                best_score = -1.0e18
+                best_prev_idx = -1
+                for prev_idx, prev_candidate in enumerate(previous_candidates):
+                    transition_score = self._transition_score(
+                        prev_candidate,
+                        current_candidate,
+                        position_sigma_m=position_sigma_m,
+                        yaw_sigma_deg=yaw_sigma_deg,
+                        stay_bonus=stay_bonus,
+                    )
+                    candidate_score = float(dp_scores[-1][prev_idx]) + transition_score
+                    if candidate_score > best_score:
+                        best_score = candidate_score
+                        best_prev_idx = prev_idx
+                current_dp[current_idx] = unary_score + best_score
+                current_backpointer[current_idx] = best_prev_idx
+            dp_scores.append(current_dp)
+            backpointers.append(current_backpointer)
+
+        selected_indices = [0] * len(frame_results)
+        selected_indices[-1] = int(np.argmax(dp_scores[-1]))
+        for frame_idx in range(len(frame_results) - 1, 0, -1):
+            selected_indices[frame_idx - 1] = int(
+                backpointers[frame_idx][selected_indices[frame_idx]]
+            )
+
+        smoothed_results: list[dict[str, Any]] = []
+        for frame_idx, (frame_result, selected_candidate_idx) in enumerate(zip(frame_results, selected_indices)):
+            selected_candidate = frame_result["candidate_results"][selected_candidate_idx]
+            gt_pose = self.sequence_dataset.ground_truth.poses_4x4[frame_result["frame_idx"]]
+            selected_pose = np.asarray(selected_candidate["final_pose_4x4"], dtype=np.float64)
+            position_error_m = float(np.linalg.norm(selected_pose[:2, 3] - gt_pose[:2, 3]))
+            yaw_error_rad = float(
+                wrap_to_pi(yaw_from_pose_matrix(selected_pose) - yaw_from_pose_matrix(gt_pose))
+            )
+            updated_frame_result = dict(frame_result)
+            updated_frame_result["online_best_patch_id"] = int(frame_result["best_patch_id"])
+            updated_frame_result["online_pred_pose_4x4"] = frame_result["pred_pose_4x4"]
+            updated_frame_result["best_patch_id"] = int(selected_candidate["patch_id"])
+            updated_frame_result["pred_pose_4x4"] = selected_candidate["final_pose_4x4"]
+            updated_frame_result["position_error_m"] = position_error_m
+            updated_frame_result["yaw_error_deg"] = float(math.degrees(abs(yaw_error_rad)))
+            updated_frame_result["selection_mode"] = "sequence_smoothing"
+            updated_frame_result["selected_candidate_index"] = int(selected_candidate_idx)
+            updated_frame_result["selected_candidate_score"] = float(dp_scores[frame_idx][selected_candidate_idx])
+            smoothed_results.append(updated_frame_result)
+        return smoothed_results
 
 
 def localize_sequence(
@@ -295,12 +496,14 @@ def localize_sequence(
         frame_result = localizer.localize_frame(frame_idx, predicted_pose_4x4=predicted_pose_4x4)
         frame_results.append(frame_result)
         accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))
+    frame_results = localizer._apply_sequence_smoothing(frame_results)
     position_errors = np.asarray([item["position_error_m"] for item in frame_results], dtype=np.float64)
     yaw_errors = np.asarray([item["yaw_error_deg"] for item in frame_results], dtype=np.float64)
     report = {
         "num_eval_frames": len(frame_results),
         "frame_start": int(frame_start),
         "frame_stride": int(frame_stride),
+        "selection_mode": frame_results[0]["selection_mode"] if frame_results else "online_best",
         "mean_position_error_m": float(position_errors.mean()) if position_errors.size else None,
         "median_position_error_m": float(np.median(position_errors)) if position_errors.size else None,
         "mean_yaw_error_deg": float(yaw_errors.mean()) if yaw_errors.size else None,

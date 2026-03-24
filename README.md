@@ -115,6 +115,10 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
     - `outputs/fine_localization_oct12_aisle_ccw_deep_v3_50f.json`
     - mean position error: `10.6707 m`
     - mean yaw error: `53.8335 deg`
+- Stereo query-image branch is also implemented and trained:
+  - checkpoint: `outputs/fine_pose_matcher_v4_stereo.pt`
+  - current best validation candidate classification accuracy: `51.33%`
+  - this is lower than the monocular V4 peak `69.75%`, so stereo is not promoted to the default branch yet
 
 ## Best checkpoint
 

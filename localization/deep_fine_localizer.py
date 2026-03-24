@@ -12,6 +12,7 @@ ensure_runtime_compatibility()
 
 import torch
 
+from dataset_io.image_loader import load_rgb_image
 from geometry.yaw_utils import wrap_to_pi, yaw_from_pose_matrix
 from localization.bev_matcher import match_query_points_to_submap_bev
 from localization.fine_localizer import FineLocalizer
@@ -34,9 +35,13 @@ class DeepFineLocalizer(FineLocalizer):
             local_submap_size_m=float(checkpoint_config.get("local_submap_size_m", self.config.local_submap_size_m)),
             num_xy_bins=int(checkpoint_config.get("num_xy_bins", 31)),
             num_yaw_bins=int(checkpoint_config.get("num_yaw_bins", 72)),
+            use_query_image=bool(checkpoint_config.get("use_query_image", True)),
+            use_stereo_query_image=bool(checkpoint_config.get("use_stereo_query_image", True)),
         ).to(self.device)
         self.deep_model.load_state_dict(checkpoint["model"], strict=True)
         self.deep_model.eval()
+        resize_hw = checkpoint_config.get("image_resize_hw", (128, 192))
+        self.image_resize_hw = (int(resize_hw[0]), int(resize_hw[1]))
 
     def _predict_candidate_pose(
         self,
@@ -45,10 +50,34 @@ class DeepFineLocalizer(FineLocalizer):
         candidate_centers_xy: np.ndarray,
     ) -> dict[str, np.ndarray]:
         query_bev = points_to_bev(query_points, self.query_bev_config)
+        query_image_tensor = None
+        query_image_right_tensor = None
+        if self.deep_model.use_query_image:
+            image_left, _ = load_rgb_image(
+                self.sequence_dataset.frame_index[self._active_frame_idx].image_left_path,
+                camera_model=self.sequence_dataset.camera_left,
+                use_undistort=False,
+                resize_hw=self.image_resize_hw,
+            )
+            image_left = np.asarray(image_left, dtype=np.float32) / 255.0
+            image_left = np.transpose(image_left, (2, 0, 1)).astype(np.float32, copy=False)
+            query_image_tensor = torch.from_numpy(image_left[None]).to(self.device).float()
+            if self.deep_model.use_stereo_query_image:
+                image_right, _ = load_rgb_image(
+                    self.sequence_dataset.frame_index[self._active_frame_idx].image_right_path,
+                    camera_model=self.sequence_dataset.camera_right,
+                    use_undistort=False,
+                    resize_hw=self.image_resize_hw,
+                )
+                image_right = np.asarray(image_right, dtype=np.float32) / 255.0
+                image_right = np.transpose(image_right, (2, 0, 1)).astype(np.float32, copy=False)
+                query_image_right_tensor = torch.from_numpy(image_right[None]).to(self.device).float()
         with torch.no_grad():
             outputs = self.deep_model(
                 torch.from_numpy(query_bev[None]).to(self.device).float(),
                 torch.from_numpy(candidate_bevs[None]).to(self.device).float(),
+                query_image=query_image_tensor,
+                query_image_right=query_image_right_tensor,
             )
         pose = outputs["pose"][0].detach().cpu().numpy().astype(np.float64)
         match_probability = torch.softmax(outputs["match_logit"], dim=1)[0].detach().cpu().numpy().astype(np.float64)
@@ -64,6 +93,7 @@ class DeepFineLocalizer(FineLocalizer):
         }
 
     def localize_frame(self, frame_idx: int, predicted_pose_4x4: np.ndarray | None = None) -> dict[str, object]:
+        self._active_frame_idx = int(frame_idx)
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
         candidate_bevs = []

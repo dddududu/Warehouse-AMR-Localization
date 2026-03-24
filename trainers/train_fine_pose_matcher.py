@@ -65,9 +65,20 @@ def _evaluate_matcher(
             sample = dataset[sample_idx]
             query_bev = sample["query_bev"][None].to(device).float()
             candidate_bevs = sample["candidate_bevs"][None].to(device).float()
+            query_image = sample.get("query_image")
+            query_image_tensor = query_image[None].to(device).float() if isinstance(query_image, torch.Tensor) else None
+            query_image_right = sample.get("query_image_right")
+            query_image_right_tensor = (
+                query_image_right[None].to(device).float() if isinstance(query_image_right, torch.Tensor) else None
+            )
             gt_candidate_index = int(sample["gt_candidate_index"])
             candidate_pose_targets = sample["candidate_pose_targets"][None].to(device).float()
-            outputs = model(query_bev, candidate_bevs)
+            outputs = model(
+                query_bev,
+                candidate_bevs,
+                query_image=query_image_tensor,
+                query_image_right=query_image_right_tensor,
+            )
             if int(torch.argmax(outputs["match_logit"], dim=1).item()) == gt_candidate_index:
                 correct += 1
             pose_error = torch.abs(
@@ -104,6 +115,8 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
         local_submap_size_m=cfg.local_submap_size_m,
         num_xy_bins=cfg.num_xy_bins,
         num_yaw_bins=cfg.num_yaw_bins,
+        use_query_image=cfg.use_query_image,
+        use_stereo_query_image=cfg.use_stereo_query_image,
     ).to(device)
     if cfg.init_checkpoint_path:
         state = torch.load(cfg.init_checkpoint_path, map_location=device)
@@ -126,11 +139,20 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
         for batch in dataloader:
             query_bev = batch["query_bev"].to(device).float()
             candidate_bevs = batch["candidate_bevs"].to(device).float()
+            query_image = batch.get("query_image")
+            query_image_tensor = query_image.to(device).float() if isinstance(query_image, torch.Tensor) else None
+            query_image_right = batch.get("query_image_right")
+            query_image_right_tensor = query_image_right.to(device).float() if isinstance(query_image_right, torch.Tensor) else None
             candidate_pose_targets = batch["candidate_pose_targets"].to(device).float()
             gt_candidate_index = batch["gt_candidate_index"].to(device).long()
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                outputs = model(query_bev, candidate_bevs)
+                outputs = model(
+                    query_bev,
+                    candidate_bevs,
+                    query_image=query_image_tensor,
+                    query_image_right=query_image_right_tensor,
+                )
                 match_loss = F.cross_entropy(outputs["match_logit"], gt_candidate_index)
                 gather_index = gt_candidate_index[:, None, None].expand(-1, 1, 3)
                 selected_pose = outputs["pose"].gather(1, gather_index).squeeze(1)

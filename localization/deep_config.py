@@ -21,6 +21,9 @@ class DeepFineMatcherTrainConfig:
     hidden_dim: int = 128
     num_xy_bins: int = 31
     num_yaw_bins: int = 72
+    use_query_image: bool = True
+    use_stereo_query_image: bool = True
+    image_resize_hw: tuple[int, int] = (128, 192)
     train_batch_size: int = 8
     train_num_workers: int = 0
     train_epochs: int = 4
@@ -44,7 +47,11 @@ class DeepFineMatcherTrainConfig:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "DeepFineMatcherTrainConfig":
-        return cls(**dict(mapping))
+        payload = dict(mapping)
+        resize_hw = payload.get("image_resize_hw")
+        if resize_hw is not None:
+            payload["image_resize_hw"] = (int(resize_hw[0]), int(resize_hw[1]))
+        return cls(**payload)
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "DeepFineMatcherTrainConfig":

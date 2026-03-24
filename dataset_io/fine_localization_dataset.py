@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from analysis.analyze_map import load_map_vertices
+from dataset_io.image_loader import load_rgb_image
 from dataset_io.lidar_loader import load_pcd_xyz
 from dataset_io.sequence_dataset import WarehouseSequenceDataset
 from geometry.yaw_utils import wrap_to_pi, yaw_from_quaternion_xyzw
@@ -212,7 +213,7 @@ class DeepFineLocalizationDataset(Dataset):
             ],
             axis=0,
         ).astype(np.float32, copy=False)
-        return {
+        payload: dict[str, torch.Tensor | int | str] = {
             "sequence_name": resources.sequence_name,
             "frame_idx": int(sample["frame_idx"]),
             "query_bev": torch.from_numpy(self._build_query_bev(resources, frame_idx)),
@@ -223,3 +224,24 @@ class DeepFineLocalizationDataset(Dataset):
             "candidate_patch_ids": torch.from_numpy(candidate_patch_ids),
             "candidate_centers_xy": torch.from_numpy(candidate_centers_xy.astype(np.float32)),
         }
+        if bool(self.config.use_query_image):
+            image_left, _ = load_rgb_image(
+                sample["image_left_path"],
+                camera_model=resources.sequence_dataset.camera_left,
+                use_undistort=False,
+                resize_hw=self.config.image_resize_hw,
+            )
+            image_left = np.asarray(image_left, dtype=np.float32) / 255.0
+            image_left = np.transpose(image_left, (2, 0, 1)).astype(np.float32, copy=False)
+            payload["query_image"] = torch.from_numpy(image_left)
+            if bool(self.config.use_stereo_query_image):
+                image_right, _ = load_rgb_image(
+                    sample["image_right_path"],
+                    camera_model=resources.sequence_dataset.camera_right,
+                    use_undistort=False,
+                    resize_hw=self.config.image_resize_hw,
+                )
+                image_right = np.asarray(image_right, dtype=np.float32) / 255.0
+                image_right = np.transpose(image_right, (2, 0, 1)).astype(np.float32, copy=False)
+                payload["query_image_right"] = torch.from_numpy(image_right)
+        return payload

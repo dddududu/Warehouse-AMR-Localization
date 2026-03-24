@@ -10,6 +10,9 @@ descriptor_dim: 64
 hidden_dim: 64
 num_xy_bins: 31
 num_yaw_bins: 72
+use_query_image: true
+use_stereo_query_image: true
+image_resize_hw: [128, 192]
 train_batch_size: 4
 train_num_workers: 0
 train_epochs: 1

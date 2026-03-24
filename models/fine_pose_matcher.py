@@ -67,21 +67,33 @@ class FinePoseMatcher(nn.Module):
         self.pose_head = nn.Linear(hidden_dim, 3)
         self.pose_confidence_head = nn.Linear(hidden_dim, 1)
 
-    def forward(self, query_bev: torch.Tensor, candidate_bev: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, query_bev: torch.Tensor, candidate_bevs: torch.Tensor) -> dict[str, torch.Tensor]:
         query_feature_map, query_descriptor = self.encoder(query_bev)
-        candidate_feature_map, candidate_descriptor = self.encoder(candidate_bev)
+        if candidate_bevs.ndim == 4:
+            candidate_bevs = candidate_bevs[:, None, ...]
+        batch_size, num_candidates, channels, height, width = candidate_bevs.shape
+        flat_candidates = candidate_bevs.reshape(batch_size * num_candidates, channels, height, width)
+        candidate_feature_map, candidate_descriptor = self.encoder(flat_candidates)
         candidate_feature_map = F.interpolate(
             candidate_feature_map,
             size=query_feature_map.shape[-2:],
             mode="bilinear",
             align_corners=False,
         )
+        expanded_query_feature_map = query_feature_map[:, None, ...].repeat(1, num_candidates, 1, 1, 1).reshape(
+            batch_size * num_candidates,
+            *query_feature_map.shape[1:],
+        )
+        expanded_query_descriptor = query_descriptor[:, None, :].repeat(1, num_candidates, 1).reshape(
+            batch_size * num_candidates,
+            query_descriptor.shape[1],
+        )
         fused_map = torch.cat(
             (
-                query_feature_map,
+                expanded_query_feature_map,
                 candidate_feature_map,
-                torch.abs(query_feature_map - candidate_feature_map),
-                query_feature_map * candidate_feature_map,
+                torch.abs(expanded_query_feature_map - candidate_feature_map),
+                expanded_query_feature_map * candidate_feature_map,
             ),
             dim=1,
         )
@@ -89,10 +101,10 @@ class FinePoseMatcher(nn.Module):
         fused_local = F.adaptive_avg_pool2d(fused_map, output_size=1).flatten(1)
         fused_global = torch.cat(
             (
-                query_descriptor,
+                expanded_query_descriptor,
                 candidate_descriptor,
-                torch.abs(query_descriptor - candidate_descriptor),
-                query_descriptor * candidate_descriptor,
+                torch.abs(expanded_query_descriptor - candidate_descriptor),
+                expanded_query_descriptor * candidate_descriptor,
             ),
             dim=1,
         )
@@ -106,9 +118,9 @@ class FinePoseMatcher(nn.Module):
         pose_confidence = torch.sigmoid(self.pose_confidence_head(fused)).squeeze(1)
         match_logit = self.match_head(fused).squeeze(1)
         return {
-            "match_logit": match_logit,
-            "pose": pose,
-            "pose_confidence": pose_confidence,
+            "match_logit": match_logit.reshape(batch_size, num_candidates),
+            "pose": pose.reshape(batch_size, num_candidates, 3),
+            "pose_confidence": pose_confidence.reshape(batch_size, num_candidates),
             "query_descriptor": query_descriptor,
-            "candidate_descriptor": candidate_descriptor,
+            "candidate_descriptor": candidate_descriptor.reshape(batch_size, num_candidates, -1),
         }

@@ -372,6 +372,10 @@ class FineLocalizer:
             + float(self.config.icp_inlier_weight) * float(candidate["icp_inlier_ratio"])
             - float(self.config.icp_rmse_weight) * rmse
         )
+        if "deep_match_probability" in candidate:
+            score += float(self.config.deep_matcher_score_weight) * float(candidate["deep_match_probability"])
+        if "deep_pose_confidence" in candidate:
+            score += float(self.config.deep_pose_confidence_weight) * float(candidate["deep_pose_confidence"])
         if not bool(candidate.get("icp_valid", True)):
             score -= float(self.config.invalid_icp_penalty)
         return float(score)

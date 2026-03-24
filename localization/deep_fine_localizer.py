@@ -13,6 +13,7 @@ ensure_runtime_compatibility()
 import torch
 
 from geometry.yaw_utils import wrap_to_pi, yaw_from_pose_matrix
+from localization.bev_matcher import match_query_points_to_submap_bev
 from localization.fine_localizer import FineLocalizer
 from localization.icp_refiner import pose_from_xy_yaw_z, refine_pose_with_icp
 from localization.submap_builder import build_local_submap
@@ -38,33 +39,34 @@ class DeepFineLocalizer(FineLocalizer):
     def _predict_candidate_pose(
         self,
         query_points: np.ndarray,
-        candidate_bev: np.ndarray,
-        candidate_center_xy: tuple[float, float],
-    ) -> dict[str, float | tuple[float, float] | np.ndarray]:
+        candidate_bevs: np.ndarray,
+        candidate_centers_xy: np.ndarray,
+    ) -> dict[str, np.ndarray]:
         query_bev = points_to_bev(query_points, self.query_bev_config)
         with torch.no_grad():
             outputs = self.deep_model(
                 torch.from_numpy(query_bev[None]).to(self.device).float(),
-                torch.from_numpy(candidate_bev[None]).to(self.device).float(),
+                torch.from_numpy(candidate_bevs[None]).to(self.device).float(),
             )
         pose = outputs["pose"][0].detach().cpu().numpy().astype(np.float64)
-        match_probability = float(torch.sigmoid(outputs["match_logit"])[0].item())
-        pose_confidence = float(outputs["pose_confidence"][0].item())
-        world_x = float(candidate_center_xy[0] + pose[0])
-        world_y = float(candidate_center_xy[1] + pose[1])
-        yaw_rad = float(pose[2])
+        match_probability = torch.softmax(outputs["match_logit"], dim=1)[0].detach().cpu().numpy().astype(np.float64)
+        pose_confidence = outputs["pose_confidence"][0].detach().cpu().numpy().astype(np.float64)
+        world_xy = candidate_centers_xy.astype(np.float64) + pose[:, :2]
+        yaw_rad = pose[:, 2]
         return {
-            "initial_pose_4x4": pose_from_xy_yaw_z(world_x, world_y, yaw_rad, z=0.0),
             "match_probability": match_probability,
             "pose_confidence": pose_confidence,
-            "predicted_world_xy": (world_x, world_y),
-            "predicted_yaw_deg": float(math.degrees(yaw_rad)),
+            "predicted_world_xy": world_xy,
+            "predicted_yaw_deg": np.degrees(yaw_rad).astype(np.float64),
+            "predicted_pose_delta": pose,
         }
 
     def localize_frame(self, frame_idx: int, predicted_pose_4x4: np.ndarray | None = None) -> dict[str, object]:
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
-        candidate_results: list[dict[str, object]] = []
+        candidate_bevs = []
+        candidate_centers_xy = []
+        submaps = []
         for candidate in candidates:
             patch_meta = candidate["metadata"]
             submap = build_local_submap(
@@ -73,11 +75,41 @@ class DeepFineLocalizer(FineLocalizer):
                 size_m=self.config.local_submap_size_m,
                 resolution=self.config.local_submap_resolution,
             )
-            deep_prediction = self._predict_candidate_pose(query_points, submap.bev.astype(np.float32), patch_meta.center_xy)
+            submaps.append(submap)
+            candidate_bevs.append(np.asarray(submap.bev, dtype=np.float32))
+            candidate_centers_xy.append(np.asarray(patch_meta.center_xy, dtype=np.float32))
+        deep_prediction = self._predict_candidate_pose(
+            query_points,
+            np.stack(candidate_bevs, axis=0).astype(np.float32, copy=False),
+            np.stack(candidate_centers_xy, axis=0).astype(np.float32, copy=False),
+        )
+        candidate_results: list[dict[str, object]] = []
+        for candidate_idx, candidate in enumerate(candidates):
+            submap = submaps[candidate_idx]
+            predicted_world_xy = deep_prediction["predicted_world_xy"][candidate_idx]
+            predicted_yaw_deg = float(deep_prediction["predicted_yaw_deg"][candidate_idx])
+            bev_match = match_query_points_to_submap_bev(
+                query_points_xyz=query_points,
+                query_bev_config=self.query_bev_config,
+                submap_bev=submap.bev,
+                submap_bev_config=submap.bev_config,
+                submap_center_xy=submap.center_xy,
+                coarse_yaw_rad=math.radians(float(candidate["query_rotation_deg"])),
+                yaw_half_range_deg=self.config.coarse_yaw_half_range_deg,
+                yaw_step_deg=self.config.coarse_yaw_step_deg,
+                match_channel=self.config.match_channel,
+                coarse_match_method=self.config.coarse_match_method,
+            )
+            initial_pose_4x4 = pose_from_xy_yaw_z(
+                float(bev_match.world_xy[0]),
+                float(bev_match.world_xy[1]),
+                float(bev_match.yaw_rad),
+                z=0.0,
+            )
             icp_result = refine_pose_with_icp(
                 query_points_xyz_sensor=query_points,
                 map_points_xyz_world=submap.points_xyz_world,
-                initial_pose_4x4=deep_prediction["initial_pose_4x4"],
+                initial_pose_4x4=initial_pose_4x4,
                 voxel_size_m=self.config.voxel_size_m,
                 max_iterations=self.config.icp_max_iterations,
                 max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
@@ -85,11 +117,11 @@ class DeepFineLocalizer(FineLocalizer):
             )
             temporal_score = self._temporal_score(icp_result.pose_4x4, predicted_pose_4x4)
             final_score = (
-                float(self.config.retrieval_score_weight) * float(candidate["score"])
-                + float(self.config.deep_matcher_score_weight) * float(deep_prediction["match_probability"])
-                + float(self.config.deep_pose_confidence_weight) * float(deep_prediction["pose_confidence"])
-                + float(self.config.icp_inlier_weight) * float(icp_result.inlier_ratio)
-                - float(self.config.icp_rmse_weight) * float(icp_result.rmse if np.isfinite(icp_result.rmse) else 10.0)
+                0.10 * float(candidate["score"])
+                + float(self.config.deep_matcher_score_weight) * float(deep_prediction["match_probability"][candidate_idx])
+                + float(self.config.deep_pose_confidence_weight) * float(deep_prediction["pose_confidence"][candidate_idx])
+                + 0.10 * float(icp_result.inlier_ratio)
+                - 0.02 * float(icp_result.rmse if np.isfinite(icp_result.rmse) else 10.0)
                 + float(self.config.temporal_weight) * float(temporal_score)
             )
             candidate_results.append(
@@ -97,14 +129,19 @@ class DeepFineLocalizer(FineLocalizer):
                     "patch_id": int(candidate["patch_id"]),
                     "coarse_score": float(candidate["score"]),
                     "coarse_query_rotation_deg": float(candidate["query_rotation_deg"]),
-                    "bev_score": 0.0,
+                    "bev_score": float(bev_match.score),
                     "initial_world_xy": [
-                        float(deep_prediction["predicted_world_xy"][0]),
-                        float(deep_prediction["predicted_world_xy"][1]),
+                        float(bev_match.world_xy[0]),
+                        float(bev_match.world_xy[1]),
                     ],
-                    "initial_yaw_deg": float(deep_prediction["predicted_yaw_deg"]),
-                    "deep_match_probability": float(deep_prediction["match_probability"]),
-                    "deep_pose_confidence": float(deep_prediction["pose_confidence"]),
+                    "initial_yaw_deg": float(math.degrees(bev_match.yaw_rad)),
+                    "deep_pred_world_xy": [
+                        float(predicted_world_xy[0]),
+                        float(predicted_world_xy[1]),
+                    ],
+                    "deep_pred_yaw_deg": predicted_yaw_deg,
+                    "deep_match_probability": float(deep_prediction["match_probability"][candidate_idx]),
+                    "deep_pose_confidence": float(deep_prediction["pose_confidence"][candidate_idx]),
                     "icp_inlier_ratio": float(icp_result.inlier_ratio),
                     "icp_rmse": float(icp_result.rmse),
                     "icp_valid": bool(

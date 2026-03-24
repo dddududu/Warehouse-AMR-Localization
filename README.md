@@ -102,6 +102,13 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
   - mean position error: `1.9704 m`
   - median position error: `1.9645 m`
   - mean yaw error: `50.4744 deg`
+- V2 switches to `topK` candidate-set classification plus pose residual prediction:
+  - training script still uses `trainers/train_fine_pose_matcher.py`
+  - current best validation candidate classification accuracy: `66.73%`
+  - current `Aisle_CCW` 50-frame deep-dominant result is still below the geometric baseline:
+    - `outputs/fine_localization_oct12_aisle_ccw_deep_v2_50f.json`
+    - mean position error: `1.9640 m`
+    - mean yaw error: `60.7309 deg`
 
 ## Best checkpoint
 

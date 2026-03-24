@@ -186,23 +186,40 @@ class DeepFineLocalizationDataset(Dataset):
             gt_patch_id,
             frame_seed=sequence_idx * 1_000_000 + frame_idx,
         )
-        positive_center_xy = resources.candidate_centers_xy[gt_patch_id]
-        positive_pose_target = np.asarray(
-            [
-                float(gt_position[0] - positive_center_xy[0]),
-                float(gt_position[1] - positive_center_xy[1]),
-                gt_yaw,
-            ],
-            dtype=np.float32,
+        candidate_patch_ids = np.concatenate(
+            (
+                np.asarray([gt_patch_id], dtype=np.int64),
+                negative_patch_ids.astype(np.int64),
+            ),
+            axis=0,
         )
+        rng = np.random.default_rng(seed=sequence_idx * 1_000_000 + frame_idx + 97)
+        permutation = rng.permutation(candidate_patch_ids.shape[0]).astype(np.int64)
+        candidate_patch_ids = candidate_patch_ids[permutation]
+        gt_candidate_index = int(np.flatnonzero(candidate_patch_ids == gt_patch_id)[0])
+        candidate_centers_xy = resources.candidate_centers_xy[candidate_patch_ids]
+        candidate_pose_targets = np.stack(
+            [
+                np.asarray(
+                    [
+                        float(gt_position[0] - center_xy[0]),
+                        float(gt_position[1] - center_xy[1]),
+                        gt_yaw,
+                    ],
+                    dtype=np.float32,
+                )
+                for center_xy in candidate_centers_xy
+            ],
+            axis=0,
+        ).astype(np.float32, copy=False)
         return {
             "sequence_name": resources.sequence_name,
             "frame_idx": int(sample["frame_idx"]),
             "query_bev": torch.from_numpy(self._build_query_bev(resources, frame_idx)),
-            "positive_candidate_bev": torch.from_numpy(resources.candidate_patch_bevs[gt_patch_id]),
-            "negative_candidate_bevs": torch.from_numpy(resources.candidate_patch_bevs[negative_patch_ids]),
-            "positive_pose_target": torch.from_numpy(positive_pose_target),
+            "candidate_bevs": torch.from_numpy(resources.candidate_patch_bevs[candidate_patch_ids]),
+            "candidate_pose_targets": torch.from_numpy(candidate_pose_targets),
             "gt_patch_id": int(gt_patch_id),
-            "negative_patch_ids": torch.from_numpy(negative_patch_ids),
-            "positive_candidate_center_xy": torch.tensor(positive_center_xy, dtype=torch.float32),
+            "gt_candidate_index": int(gt_candidate_index),
+            "candidate_patch_ids": torch.from_numpy(candidate_patch_ids),
+            "candidate_centers_xy": torch.from_numpy(candidate_centers_xy.astype(np.float32)),
         }

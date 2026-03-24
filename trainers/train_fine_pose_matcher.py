@@ -33,18 +33,16 @@ def _evaluate_matcher(
         for sample_idx in range(len(dataset)):
             sample = dataset[sample_idx]
             query_bev = sample["query_bev"][None].to(device).float()
-            positive_candidate_bev = sample["positive_candidate_bev"][None].to(device).float()
-            negative_candidate_bevs = sample["negative_candidate_bevs"].to(device).float()
-            outputs_pos = model(query_bev, positive_candidate_bev)
-            if negative_candidate_bevs.shape[0] > 0:
-                repeated_query = query_bev.repeat(negative_candidate_bevs.shape[0], 1, 1, 1)
-                outputs_neg = model(repeated_query, negative_candidate_bevs)
-                negative_max = float(outputs_neg["match_logit"].max().item())
-            else:
-                negative_max = float("-inf")
-            if float(outputs_pos["match_logit"].item()) > negative_max:
+            candidate_bevs = sample["candidate_bevs"][None].to(device).float()
+            gt_candidate_index = int(sample["gt_candidate_index"])
+            candidate_pose_targets = sample["candidate_pose_targets"][None].to(device).float()
+            outputs = model(query_bev, candidate_bevs)
+            if int(torch.argmax(outputs["match_logit"], dim=1).item()) == gt_candidate_index:
                 correct += 1
-            pose_error = torch.abs(outputs_pos["pose"].cpu() - sample["positive_pose_target"][None]).mean().item()
+            pose_error = torch.abs(
+                outputs["pose"][:, gt_candidate_index, :].cpu()
+                - candidate_pose_targets[:, gt_candidate_index, :].cpu()
+            ).mean().item()
             pose_errors.append(float(pose_error))
     return {
         "num_val_frames": int(len(dataset)),
@@ -94,32 +92,20 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
         epoch_losses: list[float] = []
         for batch in dataloader:
             query_bev = batch["query_bev"].to(device).float()
-            positive_candidate_bev = batch["positive_candidate_bev"].to(device).float()
-            negative_candidate_bevs = batch["negative_candidate_bevs"].to(device).float()
-            positive_pose_target = batch["positive_pose_target"].to(device).float()
+            candidate_bevs = batch["candidate_bevs"].to(device).float()
+            candidate_pose_targets = batch["candidate_pose_targets"].to(device).float()
+            gt_candidate_index = batch["gt_candidate_index"].to(device).long()
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                outputs_pos = model(query_bev, positive_candidate_bev)
-                positive_labels = torch.ones_like(outputs_pos["match_logit"])
-                match_loss = F.binary_cross_entropy_with_logits(outputs_pos["match_logit"], positive_labels)
-                if negative_candidate_bevs.shape[1] > 0:
-                    batch_size, num_neg, channels, height, width = negative_candidate_bevs.shape
-                    flat_negative_bevs = negative_candidate_bevs.reshape(batch_size * num_neg, channels, height, width)
-                    repeated_query_bev = query_bev[:, None].repeat(1, num_neg, 1, 1, 1).reshape(
-                        batch_size * num_neg,
-                        query_bev.shape[1],
-                        query_bev.shape[2],
-                        query_bev.shape[3],
-                    )
-                    outputs_neg = model(repeated_query_bev, flat_negative_bevs)
-                    negative_labels = torch.zeros_like(outputs_neg["match_logit"])
-                    match_loss = match_loss + F.binary_cross_entropy_with_logits(
-                        outputs_neg["match_logit"],
-                        negative_labels,
-                    )
-                pose_loss = F.smooth_l1_loss(outputs_pos["pose"], positive_pose_target)
-                confidence_target = torch.exp(-torch.abs(outputs_pos["pose"] - positive_pose_target).mean(dim=1))
-                confidence_loss = F.mse_loss(outputs_pos["pose_confidence"], confidence_target)
+                outputs = model(query_bev, candidate_bevs)
+                match_loss = F.cross_entropy(outputs["match_logit"], gt_candidate_index)
+                gather_index = gt_candidate_index[:, None, None].expand(-1, 1, 3)
+                selected_pose = outputs["pose"].gather(1, gather_index).squeeze(1)
+                selected_target = candidate_pose_targets.gather(1, gather_index).squeeze(1)
+                pose_loss = F.smooth_l1_loss(selected_pose, selected_target)
+                selected_confidence = outputs["pose_confidence"].gather(1, gt_candidate_index[:, None]).squeeze(1)
+                confidence_target = torch.exp(-torch.abs(selected_pose - selected_target).mean(dim=1))
+                confidence_loss = F.mse_loss(selected_confidence, confidence_target)
                 loss = (
                     float(cfg.match_loss_weight) * match_loss
                     + float(cfg.pose_loss_weight) * pose_loss

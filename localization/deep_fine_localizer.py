@@ -12,6 +12,8 @@ ensure_runtime_compatibility()
 
 import torch
 
+from dataset_io.depth_loader import load_depth_png
+from dataset_io.fine_localization_dataset import build_stereo_geometry_features
 from dataset_io.image_loader import load_rgb_image
 from geometry.yaw_utils import wrap_to_pi, yaw_from_pose_matrix
 from localization.bev_matcher import match_query_points_to_submap_bev
@@ -37,11 +39,24 @@ class DeepFineLocalizer(FineLocalizer):
             num_yaw_bins=int(checkpoint_config.get("num_yaw_bins", 72)),
             use_query_image=bool(checkpoint_config.get("use_query_image", True)),
             use_stereo_query_image=bool(checkpoint_config.get("use_stereo_query_image", True)),
+            use_query_depth=bool(checkpoint_config.get("use_query_depth", True)),
+            use_stereo_geometry=bool(checkpoint_config.get("use_stereo_geometry", True)),
         ).to(self.device)
         self.deep_model.load_state_dict(checkpoint["model"], strict=True)
         self.deep_model.eval()
         resize_hw = checkpoint_config.get("image_resize_hw", (128, 192))
         self.image_resize_hw = (int(resize_hw[0]), int(resize_hw[1]))
+        self.depth_scale = float(checkpoint_config.get("depth_scale", 0.001))
+        self.depth_min_m = float(checkpoint_config.get("depth_min_m", 0.1))
+        self.depth_max_m = float(checkpoint_config.get("depth_max_m", 20.0))
+        width_scale = float(self.image_resize_hw[1]) / float(self.sequence_dataset.camera_left.width)
+        self.query_fx_px = float(self.sequence_dataset.camera_left.fx) * width_scale
+        self.stereo_baseline_m = float(
+            np.linalg.norm(
+                self.sequence_dataset.calibration.T_cam1_os.translation
+                - self.sequence_dataset.calibration.T_cam2_os.translation
+            )
+        )
 
     def _predict_candidate_pose(
         self,
@@ -52,6 +67,7 @@ class DeepFineLocalizer(FineLocalizer):
         query_bev = points_to_bev(query_points, self.query_bev_config)
         query_image_tensor = None
         query_image_right_tensor = None
+        query_depth_tensor = None
         if self.deep_model.use_query_image:
             image_left, _ = load_rgb_image(
                 self.sequence_dataset.frame_index[self._active_frame_idx].image_left_path,
@@ -72,12 +88,29 @@ class DeepFineLocalizer(FineLocalizer):
                 image_right = np.asarray(image_right, dtype=np.float32) / 255.0
                 image_right = np.transpose(image_right, (2, 0, 1)).astype(np.float32, copy=False)
                 query_image_right_tensor = torch.from_numpy(image_right[None]).to(self.device).float()
+        if self.deep_model.use_query_depth:
+            depth_left = load_depth_png(
+                self.sequence_dataset.frame_index[self._active_frame_idx].depth_left_path,
+                depth_scale=None,
+                resize_hw=self.image_resize_hw,
+            )
+            depth_features = build_stereo_geometry_features(
+                depth_raw=depth_left,
+                fx_px=self.query_fx_px,
+                baseline_m=self.stereo_baseline_m,
+                depth_scale=self.depth_scale,
+                depth_min_m=self.depth_min_m,
+                depth_max_m=self.depth_max_m,
+                disparity_normalizer_px=float(self.image_resize_hw[1]),
+            )
+            query_depth_tensor = torch.from_numpy(depth_features[None]).to(self.device).float()
         with torch.no_grad():
             outputs = self.deep_model(
                 torch.from_numpy(query_bev[None]).to(self.device).float(),
                 torch.from_numpy(candidate_bevs[None]).to(self.device).float(),
                 query_image=query_image_tensor,
                 query_image_right=query_image_right_tensor,
+                query_depth_features=query_depth_tensor,
             )
         pose = outputs["pose"][0].detach().cpu().numpy().astype(np.float64)
         match_probability = torch.softmax(outputs["match_logit"], dim=1)[0].detach().cpu().numpy().astype(np.float64)

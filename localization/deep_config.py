@@ -10,6 +10,7 @@ import yaml
 @dataclass(frozen=True)
 class DeepFineMatcherTrainConfig:
     coarse_config_path: str
+    coarse_checkpoint_path: str | None = None
     cache_dir: str = "./cache/deep_fine_matcher"
     local_submap_size_m: float = 30.0
     local_submap_resolution: float = 0.1
@@ -23,7 +24,13 @@ class DeepFineMatcherTrainConfig:
     num_yaw_bins: int = 72
     use_query_image: bool = True
     use_stereo_query_image: bool = True
+    use_query_depth: bool = True
+    use_stereo_geometry: bool = True
     image_resize_hw: tuple[int, int] = (128, 192)
+    depth_scale: float = 0.001
+    depth_min_m: float = 0.1
+    depth_max_m: float = 20.0
+    topk_candidates: int = 5
     train_batch_size: int = 8
     train_num_workers: int = 0
     train_epochs: int = 4

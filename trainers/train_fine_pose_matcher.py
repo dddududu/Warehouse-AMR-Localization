@@ -71,6 +71,10 @@ def _evaluate_matcher(
             query_image_right_tensor = (
                 query_image_right[None].to(device).float() if isinstance(query_image_right, torch.Tensor) else None
             )
+            query_depth_features = sample.get("query_depth_features")
+            query_depth_features_tensor = (
+                query_depth_features[None].to(device).float() if isinstance(query_depth_features, torch.Tensor) else None
+            )
             gt_candidate_index = int(sample["gt_candidate_index"])
             candidate_pose_targets = sample["candidate_pose_targets"][None].to(device).float()
             outputs = model(
@@ -78,6 +82,7 @@ def _evaluate_matcher(
                 candidate_bevs,
                 query_image=query_image_tensor,
                 query_image_right=query_image_right_tensor,
+                query_depth_features=query_depth_features_tensor,
             )
             if int(torch.argmax(outputs["match_logit"], dim=1).item()) == gt_candidate_index:
                 correct += 1
@@ -117,11 +122,19 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
         num_yaw_bins=cfg.num_yaw_bins,
         use_query_image=cfg.use_query_image,
         use_stereo_query_image=cfg.use_stereo_query_image,
+        use_query_depth=cfg.use_query_depth,
+        use_stereo_geometry=cfg.use_stereo_geometry,
     ).to(device)
     if cfg.init_checkpoint_path:
         state = torch.load(cfg.init_checkpoint_path, map_location=device)
         if state.get("model") is not None:
-            model.load_state_dict(state["model"], strict=False)
+            model_state = model.state_dict()
+            compatible_state = {
+                key: value
+                for key, value in state["model"].items()
+                if key in model_state and tuple(model_state[key].shape) == tuple(value.shape)
+            }
+            model.load_state_dict(compatible_state, strict=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     scaler = torch.amp.GradScaler(device=device.type, enabled=amp_enabled)
     scheduler = (
@@ -143,6 +156,10 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
             query_image_tensor = query_image.to(device).float() if isinstance(query_image, torch.Tensor) else None
             query_image_right = batch.get("query_image_right")
             query_image_right_tensor = query_image_right.to(device).float() if isinstance(query_image_right, torch.Tensor) else None
+            query_depth_features = batch.get("query_depth_features")
+            query_depth_features_tensor = (
+                query_depth_features.to(device).float() if isinstance(query_depth_features, torch.Tensor) else None
+            )
             candidate_pose_targets = batch["candidate_pose_targets"].to(device).float()
             gt_candidate_index = batch["gt_candidate_index"].to(device).long()
             optimizer.zero_grad(set_to_none=True)
@@ -152,6 +169,7 @@ def train_fine_pose_matcher(config, output_checkpoint: str | Path | None = None)
                     candidate_bevs,
                     query_image=query_image_tensor,
                     query_image_right=query_image_right_tensor,
+                    query_depth_features=query_depth_features_tensor,
                 )
                 match_loss = F.cross_entropy(outputs["match_logit"], gt_candidate_index)
                 gather_index = gt_candidate_index[:, None, None].expand(-1, 1, 3)

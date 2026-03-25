@@ -66,6 +66,35 @@ class QueryImageEncoder(nn.Module):
         return F.normalize(self.proj(pooled), dim=1)
 
 
+class QueryGeometryEncoder(nn.Module):
+    def __init__(self, in_channels: int = 3, descriptor_dim: int = 128) -> None:
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Conv2d(in_channels, 24, kernel_size=5, stride=2, padding=2, bias=False),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(24, 48, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(48),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(48, 96, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(96, 128, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+        )
+        self.proj = nn.Sequential(
+            nn.Linear(128, descriptor_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(descriptor_dim, descriptor_dim),
+        )
+
+    def forward(self, features_2d: torch.Tensor) -> torch.Tensor:
+        encoded = self.backbone(features_2d)
+        pooled = F.adaptive_avg_pool2d(encoded, output_size=1).flatten(1)
+        return F.normalize(self.proj(pooled), dim=1)
+
+
 class FinePoseMatcher(nn.Module):
     def __init__(
         self,
@@ -76,12 +105,17 @@ class FinePoseMatcher(nn.Module):
         num_yaw_bins: int = 72,
         use_query_image: bool = True,
         use_stereo_query_image: bool = True,
+        use_query_depth: bool = True,
+        use_stereo_geometry: bool = True,
     ) -> None:
         super().__init__()
         self.encoder = FineBEVEncoder(in_channels=4, descriptor_dim=descriptor_dim)
         self.use_query_image = bool(use_query_image)
         self.use_stereo_query_image = bool(use_stereo_query_image and use_query_image)
+        self.use_query_depth = bool(use_query_depth)
+        self.use_stereo_geometry = bool(use_stereo_geometry and use_query_depth)
         self.query_image_encoder = QueryImageEncoder(in_channels=3, descriptor_dim=descriptor_dim) if self.use_query_image else None
+        self.query_geometry_encoder = QueryGeometryEncoder(in_channels=3, descriptor_dim=descriptor_dim) if self.use_query_depth else None
         self.local_submap_size_m = float(local_submap_size_m)
         self.num_xy_bins = int(num_xy_bins)
         self.num_yaw_bins = int(num_yaw_bins)
@@ -94,7 +128,11 @@ class FinePoseMatcher(nn.Module):
             nn.BatchNorm2d(hidden_dim),
             nn.ReLU(inplace=True),
         )
-        num_global_parts = 4 + (2 if self.use_stereo_query_image else 1 if self.use_query_image else 0)
+        num_global_parts = 4
+        if self.use_query_image:
+            num_global_parts += 2 if self.use_stereo_query_image else 1
+        if self.use_query_depth:
+            num_global_parts += 1
         pair_dim = descriptor_dim * num_global_parts + hidden_dim
         self.pair_head = nn.Sequential(
             nn.Linear(pair_dim, hidden_dim),
@@ -145,10 +183,12 @@ class FinePoseMatcher(nn.Module):
         candidate_bevs: torch.Tensor,
         query_image: torch.Tensor | None = None,
         query_image_right: torch.Tensor | None = None,
+        query_depth_features: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         query_feature_map, query_descriptor = self.encoder(query_bev)
         query_image_descriptor = None
         query_image_right_descriptor = None
+        query_geometry_descriptor = None
         if self.query_image_encoder is not None:
             if query_image is None:
                 raise ValueError("query_image is required when use_query_image=True.")
@@ -157,6 +197,10 @@ class FinePoseMatcher(nn.Module):
                 if query_image_right is None:
                     raise ValueError("query_image_right is required when use_stereo_query_image=True.")
                 query_image_right_descriptor = self.query_image_encoder(query_image_right)
+        if self.query_geometry_encoder is not None:
+            if query_depth_features is None:
+                raise ValueError("query_depth_features is required when use_query_depth=True.")
+            query_geometry_descriptor = self.query_geometry_encoder(query_depth_features)
         if candidate_bevs.ndim == 4:
             candidate_bevs = candidate_bevs[:, None, ...]
         batch_size, num_candidates, channels, height, width = candidate_bevs.shape
@@ -205,6 +249,12 @@ class FinePoseMatcher(nn.Module):
                     query_image_right_descriptor.shape[1],
                 )
                 fused_global_parts.append(expanded_query_image_right_descriptor)
+        if query_geometry_descriptor is not None:
+            expanded_query_geometry_descriptor = query_geometry_descriptor[:, None, :].repeat(1, num_candidates, 1).reshape(
+                batch_size * num_candidates,
+                query_geometry_descriptor.shape[1],
+            )
+            fused_global_parts.append(expanded_query_geometry_descriptor)
         fused_global = torch.cat(tuple(fused_global_parts), dim=1)
         fused = self.pair_head(torch.cat((fused_global, fused_local), dim=1))
         x_bin_logits = self.x_bin_head(fused)
@@ -225,5 +275,6 @@ class FinePoseMatcher(nn.Module):
             "query_descriptor": query_descriptor,
             "query_image_descriptor": query_image_descriptor,
             "query_image_right_descriptor": query_image_right_descriptor,
+            "query_geometry_descriptor": query_geometry_descriptor,
             "candidate_descriptor": candidate_descriptor.reshape(batch_size, num_candidates, -1),
         }

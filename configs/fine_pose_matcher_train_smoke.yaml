@@ -1,4 +1,5 @@
 coarse_config_path: "configs/coarse_retrieval_multiday_finetune_e2_stride10.yaml"
+coarse_checkpoint_path: "checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt"
 cache_dir: "./cache/fine_pose_matcher_smoke"
 local_submap_size_m: 30.0
 local_submap_resolution: 0.1
@@ -12,7 +13,12 @@ num_xy_bins: 31
 num_yaw_bins: 72
 use_query_image: true
 use_stereo_query_image: true
+use_query_depth: true
+use_stereo_geometry: true
 image_resize_hw: [128, 192]
+depth_scale: 0.001
+depth_min_m: 0.1
+depth_max_m: 20.0
 train_batch_size: 4
 train_num_workers: 0
 train_epochs: 1

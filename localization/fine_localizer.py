@@ -362,23 +362,256 @@ class FineLocalizer:
                 for item in sorted(candidate_results, key=lambda item: item.final_score, reverse=True)
             ],
         }
-        return result
+        result = self._apply_top2_confusion_geometry_override(result)
+        return self._apply_online_pose_stabilizer(result, predicted_pose_4x4)
 
     def _candidate_unary_score(self, candidate: Mapping[str, Any]) -> float:
+        if "final_score" in candidate:
+            return float(candidate["final_score"])
+        bev_score = float(candidate.get("selected_bev_score", candidate["bev_score"]))
         rmse = float(candidate["icp_rmse"]) if np.isfinite(candidate["icp_rmse"]) else 10.0
         score = (
             float(self.config.retrieval_score_weight) * float(candidate["coarse_score"])
-            + float(self.config.bev_score_weight) * float(candidate["bev_score"])
+            + float(self.config.bev_score_weight) * bev_score
             + float(self.config.icp_inlier_weight) * float(candidate["icp_inlier_ratio"])
             - float(self.config.icp_rmse_weight) * rmse
         )
         if "deep_match_probability" in candidate:
-            score += float(self.config.deep_matcher_score_weight) * float(candidate["deep_match_probability"])
+            score += (
+                float(self.config.deep_matcher_score_weight)
+                * float(candidate["deep_match_probability"])
+                * self._deep_geometry_gate(candidate, bev_score=bev_score)
+            )
         if "deep_pose_confidence" in candidate:
-            score += float(self.config.deep_pose_confidence_weight) * float(candidate["deep_pose_confidence"])
+            score += (
+                float(self.config.deep_pose_confidence_weight)
+                * float(candidate["deep_pose_confidence"])
+                * self._deep_geometry_gate(candidate, bev_score=bev_score)
+            )
         if not bool(candidate.get("icp_valid", True)):
             score -= float(self.config.invalid_icp_penalty)
         return float(score)
+
+    @staticmethod
+    def _candidate_pose_from_mapping(candidate: Mapping[str, Any]) -> np.ndarray:
+        return np.asarray(candidate["final_pose_4x4"], dtype=np.float64)
+
+    def _deep_geometry_gate(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        bev_score: float | None = None,
+    ) -> float:
+        if not bool(candidate.get("icp_valid", True)):
+            return 0.0
+        selected_bev_score = float(
+            bev_score if bev_score is not None else candidate.get("selected_bev_score", candidate["bev_score"])
+        )
+        inlier_ratio = float(candidate.get("icp_inlier_ratio", 0.0))
+        bev_threshold = max(float(self.config.deep_geometry_gate_min_bev_score), 1.0e-6)
+        inlier_threshold = min(max(float(self.config.deep_geometry_gate_min_inlier_ratio), 0.0), 0.999999)
+        bev_support = min(max(selected_bev_score / bev_threshold, 0.0), 1.0)
+        inlier_support = min(max((inlier_ratio - inlier_threshold) / (1.0 - inlier_threshold), 0.0), 1.0)
+        return float(bev_support * inlier_support)
+
+    def _online_candidate_support(self, candidate: Mapping[str, Any]) -> float:
+        if not bool(candidate.get("icp_valid", True)):
+            return 0.0
+        bev_score = float(candidate.get("selected_bev_score", candidate["bev_score"]))
+        inlier_ratio = float(candidate.get("icp_inlier_ratio", 0.0))
+        bev_threshold = max(float(self.config.online_stabilizer_min_bev_score), 1.0e-6)
+        inlier_threshold = max(float(self.config.online_stabilizer_min_icp_inlier_ratio), 1.0e-6)
+        bev_support = min(max(bev_score / bev_threshold, 0.0), 1.0)
+        inlier_support = min(max(inlier_ratio / inlier_threshold, 0.0), 1.0)
+        return float(bev_support * inlier_support)
+
+    def _candidate_jump_to_prediction(
+        self,
+        candidate: Mapping[str, Any],
+        predicted_pose_4x4: np.ndarray | None,
+    ) -> tuple[float | None, float | None]:
+        if predicted_pose_4x4 is None:
+            return None, None
+        if "temporal_position_jump_m" in candidate and "temporal_yaw_jump_deg" in candidate:
+            return (
+                None if candidate["temporal_position_jump_m"] is None else float(candidate["temporal_position_jump_m"]),
+                None if candidate["temporal_yaw_jump_deg"] is None else float(candidate["temporal_yaw_jump_deg"]),
+            )
+        return self._temporal_jump_metrics(
+            self._candidate_pose_from_mapping(candidate),
+            predicted_pose_4x4,
+        )
+
+    def _online_stabilizer_candidate_score(
+        self,
+        candidate: Mapping[str, Any],
+        predicted_pose_4x4: np.ndarray | None,
+    ) -> float:
+        temporal_score = float(candidate.get("temporal_score", 0.0))
+        if predicted_pose_4x4 is not None and temporal_score <= 0.0:
+            temporal_score = self._temporal_score(
+                self._candidate_pose_from_mapping(candidate),
+                predicted_pose_4x4,
+            )
+        return float(
+            self._candidate_unary_score(candidate)
+            + float(self.config.online_stabilizer_temporal_bonus) * temporal_score
+        )
+
+    def _apply_online_pose_stabilizer(
+        self,
+        frame_result: dict[str, Any],
+        predicted_pose_4x4: np.ndarray | None,
+    ) -> dict[str, Any]:
+        if (
+            predicted_pose_4x4 is None
+            or not bool(self.config.use_online_pose_stabilizer)
+            or not frame_result.get("candidate_results")
+        ):
+            return frame_result
+        candidate_results = list(frame_result["candidate_results"])
+        selected_idx = int(frame_result.get("selected_candidate_index", 0))
+        selected_candidate = candidate_results[selected_idx]
+        selected_score = self._online_stabilizer_candidate_score(selected_candidate, predicted_pose_4x4)
+        max_xy_jump = float(self.config.online_stabilizer_max_position_jump_m)
+        max_yaw_jump = float(self.config.online_stabilizer_max_yaw_jump_deg)
+        admissible_candidates: list[tuple[int, float]] = []
+        for candidate_idx, candidate in enumerate(candidate_results):
+            xy_jump_m, yaw_jump_deg = self._candidate_jump_to_prediction(candidate, predicted_pose_4x4)
+            if xy_jump_m is None or yaw_jump_deg is None:
+                continue
+            if xy_jump_m <= max_xy_jump and yaw_jump_deg <= max_yaw_jump:
+                admissible_candidates.append(
+                    (candidate_idx, self._online_stabilizer_candidate_score(candidate, predicted_pose_4x4))
+                )
+        if admissible_candidates:
+            best_admissible_idx, best_admissible_score = max(admissible_candidates, key=lambda item: item[1])
+            if (
+                best_admissible_idx != selected_idx
+                and best_admissible_score >= selected_score - float(self.config.online_stabilizer_score_margin)
+            ):
+                return self._replace_selected_candidate(
+                    frame_result,
+                    candidate_results,
+                    best_admissible_idx,
+                    selection_mode="online_stabilized",
+                    selected_candidate_score=best_admissible_score,
+                )
+            return frame_result
+        selected_support = self._online_candidate_support(selected_candidate)
+        if (
+            bool(self.config.online_stabilizer_fallback_to_tracker)
+            and selected_support < 1.0
+        ):
+            return self._replace_with_tracker_prediction(frame_result, predicted_pose_4x4)
+        return frame_result
+
+    def _top2_confusion_geometry_score(self, candidate: Mapping[str, Any]) -> float:
+        if not bool(candidate.get("icp_valid", True)):
+            return -1.0e9
+        bev_score = float(candidate.get("selected_bev_score", candidate["bev_score"]))
+        inlier_ratio = float(candidate.get("icp_inlier_ratio", 0.0))
+        rmse = float(candidate["icp_rmse"]) if np.isfinite(candidate["icp_rmse"]) else 10.0
+        return float(
+            float(self.config.top2_confusion_bev_weight) * bev_score
+            + float(self.config.top2_confusion_inlier_weight) * inlier_ratio
+            - float(self.config.top2_confusion_rmse_weight) * rmse
+        )
+
+    def _apply_top2_confusion_geometry_override(
+        self,
+        frame_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            not bool(self.config.use_top2_confusion_geometry_override)
+            or not frame_result.get("candidate_results")
+            or len(frame_result["candidate_results"]) < 2
+        ):
+            return frame_result
+        configured_pairs = {
+            tuple(sorted((int(pair[0]), int(pair[1]))))
+            for pair in self.config.top2_confusion_pairs
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        }
+        if not configured_pairs:
+            return frame_result
+        candidate_results = list(frame_result["candidate_results"])
+        first_candidate = candidate_results[0]
+        second_candidate = candidate_results[1]
+        pair = tuple(sorted((int(first_candidate["patch_id"]), int(second_candidate["patch_id"]))))
+        if pair not in configured_pairs:
+            return frame_result
+        final_score_gap = float(first_candidate["final_score"]) - float(second_candidate["final_score"])
+        if final_score_gap > float(self.config.top2_confusion_final_gap_max):
+            return frame_result
+        first_geometry_score = self._top2_confusion_geometry_score(first_candidate)
+        second_geometry_score = self._top2_confusion_geometry_score(second_candidate)
+        geometry_margin = float(self.config.top2_confusion_geometry_margin)
+        if second_geometry_score <= first_geometry_score + geometry_margin:
+            return frame_result
+        reordered_candidates = list(candidate_results)
+        reordered_candidates[0], reordered_candidates[1] = reordered_candidates[1], reordered_candidates[0]
+        updated_frame_result = dict(frame_result)
+        updated_frame_result["candidate_results"] = reordered_candidates
+        updated_frame_result = self._replace_selected_candidate(
+            updated_frame_result,
+            reordered_candidates,
+            0,
+            selection_mode="top2_confusion_geometry_override",
+            selected_candidate_score=float(reordered_candidates[0]["final_score"]),
+        )
+        updated_frame_result["top2_confusion_geometry_override"] = {
+            "pair": [int(pair[0]), int(pair[1])],
+            "final_score_gap": float(final_score_gap),
+            "selected_geometry_score": float(second_geometry_score),
+            "rejected_geometry_score": float(first_geometry_score),
+        }
+        return updated_frame_result
+
+    def _replace_selected_candidate(
+        self,
+        frame_result: dict[str, Any],
+        candidate_results: list[Mapping[str, Any]],
+        selected_candidate_idx: int,
+        *,
+        selection_mode: str,
+        selected_candidate_score: float | None = None,
+    ) -> dict[str, Any]:
+        selected_candidate = candidate_results[selected_candidate_idx]
+        gt_pose = self.sequence_dataset.ground_truth.poses_4x4[frame_result["frame_idx"]]
+        selected_pose = self._candidate_pose_from_mapping(selected_candidate)
+        position_error_m = float(np.linalg.norm(selected_pose[:2, 3] - gt_pose[:2, 3]))
+        yaw_error_rad = float(
+            wrap_to_pi(yaw_from_pose_matrix(selected_pose) - yaw_from_pose_matrix(gt_pose))
+        )
+        updated_frame_result = dict(frame_result)
+        updated_frame_result["pred_pose_4x4"] = selected_pose.tolist()
+        updated_frame_result["best_patch_id"] = int(selected_candidate["patch_id"])
+        updated_frame_result["position_error_m"] = position_error_m
+        updated_frame_result["yaw_error_deg"] = float(math.degrees(abs(yaw_error_rad)))
+        updated_frame_result["selection_mode"] = selection_mode
+        updated_frame_result["selected_candidate_index"] = int(selected_candidate_idx)
+        if selected_candidate_score is not None:
+            updated_frame_result["selected_candidate_score"] = float(selected_candidate_score)
+        return updated_frame_result
+
+    def _replace_with_tracker_prediction(
+        self,
+        frame_result: dict[str, Any],
+        predicted_pose_4x4: np.ndarray,
+    ) -> dict[str, Any]:
+        gt_pose = self.sequence_dataset.ground_truth.poses_4x4[frame_result["frame_idx"]]
+        pred_xy = np.asarray(predicted_pose_4x4[:2, 3], dtype=np.float64)
+        gt_xy = np.asarray(gt_pose[:2, 3], dtype=np.float64)
+        pred_yaw = yaw_from_pose_matrix(predicted_pose_4x4)
+        gt_yaw = yaw_from_pose_matrix(gt_pose)
+        updated_frame_result = dict(frame_result)
+        updated_frame_result["pred_pose_4x4"] = np.asarray(predicted_pose_4x4, dtype=np.float64).tolist()
+        updated_frame_result["position_error_m"] = float(np.linalg.norm(pred_xy - gt_xy))
+        updated_frame_result["yaw_error_deg"] = float(math.degrees(abs(wrap_to_pi(pred_yaw - gt_yaw))))
+        updated_frame_result["selection_mode"] = "online_tracker_fallback"
+        updated_frame_result["used_tracker_fallback"] = True
+        return updated_frame_result
 
     @staticmethod
     def _transition_score(
@@ -479,6 +712,124 @@ class FineLocalizer:
             smoothed_results.append(updated_frame_result)
         return smoothed_results
 
+    def _apply_online_patch_hysteresis(self, frame_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not frame_results or not bool(self.config.use_online_patch_hysteresis):
+            return frame_results
+        switch_margin = float(self.config.online_patch_switch_margin)
+        stabilized_results: list[dict[str, Any]] = []
+        previous_patch_id: int | None = None
+        for frame_result in frame_results:
+            candidate_results = list(frame_result.get("candidate_results", []))
+            if not candidate_results:
+                stabilized_results.append(frame_result)
+                previous_patch_id = int(frame_result["best_patch_id"])
+                continue
+            proposed_idx = 0
+            proposed_candidate = candidate_results[proposed_idx]
+            if previous_patch_id is not None and int(proposed_candidate["patch_id"]) != previous_patch_id:
+                previous_patch_candidate = next(
+                    (candidate for candidate in candidate_results if int(candidate["patch_id"]) == previous_patch_id),
+                    None,
+                )
+                if (
+                    previous_patch_candidate is not None
+                    and float(proposed_candidate["final_score"])
+                    < float(previous_patch_candidate["final_score"]) + switch_margin
+                ):
+                    previous_idx = next(
+                        idx for idx, candidate in enumerate(candidate_results)
+                        if int(candidate["patch_id"]) == previous_patch_id
+                    )
+                    updated = self._replace_selected_candidate(
+                        frame_result,
+                        candidate_results,
+                        previous_idx,
+                        selection_mode="online_patch_hysteresis",
+                        selected_candidate_score=float(previous_patch_candidate["final_score"]),
+                    )
+                    stabilized_results.append(updated)
+                    previous_patch_id = int(updated["best_patch_id"])
+                    continue
+            stabilized_results.append(frame_result)
+            previous_patch_id = int(frame_result["best_patch_id"])
+        return stabilized_results
+
+    def _apply_persistent_patch_override(
+        self,
+        frame_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not frame_results or not bool(self.config.use_persistent_patch_override):
+            return frame_results
+        directed_pairs = [
+            (int(pair[0]), int(pair[1]))
+            for pair in getattr(self.config, "persistent_patch_override_pairs", ())
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        ]
+        if not directed_pairs:
+            return frame_results
+        topn = max(1, int(self.config.persistent_patch_override_topn))
+        min_run_length = max(2, int(self.config.persistent_patch_override_min_run_length))
+        min_geometry_score = float(self.config.persistent_patch_override_min_geometry_score)
+        updated_results = list(frame_results)
+        frame_idx = 0
+        while frame_idx < len(updated_results):
+            current_patch_id = int(updated_results[frame_idx].get("best_patch_id", -1))
+            applied = False
+            for source_patch_id, target_patch_id in directed_pairs:
+                if current_patch_id != source_patch_id:
+                    continue
+                run_end = frame_idx
+                target_candidate_indices: list[int] = []
+                target_geometry_scores: list[float] = []
+                while run_end < len(updated_results):
+                    current_frame_result = updated_results[run_end]
+                    if int(current_frame_result.get("best_patch_id", -1)) != source_patch_id:
+                        break
+                    candidate_results = list(current_frame_result.get("candidate_results", []))
+                    target_candidate_idx = next(
+                        (
+                            candidate_idx
+                            for candidate_idx, candidate in enumerate(candidate_results[:topn])
+                            if int(candidate["patch_id"]) == target_patch_id
+                        ),
+                        None,
+                    )
+                    if target_candidate_idx is None:
+                        break
+                    target_candidate = candidate_results[target_candidate_idx]
+                    target_geometry_score = self._top2_confusion_geometry_score(target_candidate)
+                    if target_geometry_score < min_geometry_score:
+                        break
+                    target_candidate_indices.append(int(target_candidate_idx))
+                    target_geometry_scores.append(float(target_geometry_score))
+                    run_end += 1
+                run_length = run_end - frame_idx
+                if run_length < min_run_length:
+                    continue
+                for local_offset, selected_candidate_idx in enumerate(target_candidate_indices):
+                    target_frame_result = updated_results[frame_idx + local_offset]
+                    candidate_results = list(target_frame_result.get("candidate_results", []))
+                    replaced = self._replace_selected_candidate(
+                        target_frame_result,
+                        candidate_results,
+                        selected_candidate_idx,
+                        selection_mode="persistent_patch_override",
+                        selected_candidate_score=float(candidate_results[selected_candidate_idx].get("final_score", 0.0)),
+                    )
+                    replaced["persistent_patch_override"] = {
+                        "source_patch_id": int(source_patch_id),
+                        "target_patch_id": int(target_patch_id),
+                        "run_length": int(run_length),
+                        "target_geometry_score": float(target_geometry_scores[local_offset]),
+                    }
+                    updated_results[frame_idx + local_offset] = replaced
+                frame_idx = run_end
+                applied = True
+                break
+            if not applied:
+                frame_idx += 1
+        return updated_results
+
 
 def localize_sequence(
     config,
@@ -500,6 +851,8 @@ def localize_sequence(
         frame_result = localizer.localize_frame(frame_idx, predicted_pose_4x4=predicted_pose_4x4)
         frame_results.append(frame_result)
         accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))
+    frame_results = localizer._apply_online_patch_hysteresis(frame_results)
+    frame_results = localizer._apply_persistent_patch_override(frame_results)
     frame_results = localizer._apply_sequence_smoothing(frame_results)
     position_errors = np.asarray([item["position_error_m"] for item in frame_results], dtype=np.float64)
     yaw_errors = np.asarray([item["yaw_error_deg"] for item in frame_results], dtype=np.float64)

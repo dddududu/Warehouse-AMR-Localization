@@ -1,0 +1,53 @@
+coarse_config_path: "configs/eval_oct12_aisle_cw_classifier_head_stride10.yaml"
+coarse_checkpoint_path: "checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt"
+descriptor_bank_path: "./cache/eval_oct12_aisle_cw_classifier_head_stride10/descriptor_bank_Aisle_CW.npz"
+deep_matcher_checkpoint_path: "outputs/fine_pose_matcher_v6_realtopk_stereo_geom.pt"
+confusion_pair_resolver_checkpoint_path: "outputs/confusion_pair_resolver_cw_v1.pt"
+confusion_pair_resolver_score_weight: 0.25
+confusion_pair_resolver_top2_only: true
+confusion_pair_resolver_final_gap_max: 0.25
+output_json: "outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_pairresolver_corepatch_v1.json"
+topk_candidates: 5
+local_submap_size_m: 30.0
+local_submap_resolution: 0.1
+voxel_size_m: 0.3
+icp_max_iterations: 20
+icp_max_correspondence_distance_m: 1.0
+icp_min_correspondences: 24
+retrieval_score_weight: 0.2
+deep_matcher_score_weight: 0.35
+deep_pose_confidence_weight: 0.10
+icp_inlier_weight: 0.35
+icp_rmse_weight: 0.10
+temporal_weight: 0.20
+temporal_position_sigma_m: 1.5
+temporal_yaw_sigma_deg: 20.0
+use_constant_velocity_prediction: true
+use_sequence_smoothing: false
+deep_pose_init_xy_consistency_weight: 0.0
+deep_pose_init_yaw_consistency_weight: 0.0
+use_online_pose_stabilizer: true
+online_stabilizer_max_position_jump_m: 2.5
+online_stabilizer_max_yaw_jump_deg: 20.0
+online_stabilizer_min_icp_inlier_ratio: 0.55
+online_stabilizer_min_bev_score: 0.08
+online_stabilizer_score_margin: 0.20
+online_stabilizer_temporal_bonus: 0.10
+online_stabilizer_fallback_to_tracker: true
+use_online_patch_hysteresis: true
+online_patch_switch_margin: 0.30
+use_persistent_patch_override: true
+persistent_patch_override_pairs:
+  - [11, 13]
+persistent_patch_override_topn: 4
+persistent_patch_override_min_run_length: 6
+persistent_patch_override_min_geometry_score: 1.10
+use_top2_confusion_geometry_override: true
+top2_confusion_pairs:
+  - [6, 9]
+  - [13, 14]
+top2_confusion_final_gap_max: 0.40
+top2_confusion_bev_weight: 0.90
+top2_confusion_inlier_weight: 1.30
+top2_confusion_rmse_weight: 0.25
+top2_confusion_geometry_margin: 0.0

@@ -43,10 +43,70 @@ class FineLocalizationConfig:
     deep_matcher_checkpoint_path: str | None = None
     deep_matcher_score_weight: float = 0.35
     deep_pose_confidence_weight: float = 0.10
+    use_deep_pose_init_hypothesis: bool = True
+    use_tracker_pose_init_hypothesis: bool = False
+    deep_pose_init_xy_consistency_weight: float = 0.05
+    deep_pose_init_yaw_consistency_weight: float = 0.01
+    deep_pose_hypothesis_valid_bonus: float = 0.5
+    deep_geometry_gate_min_bev_score: float = 0.10
+    deep_geometry_gate_min_inlier_ratio: float = 0.60
+    use_online_pose_stabilizer: bool = True
+    online_stabilizer_max_position_jump_m: float = 2.5
+    online_stabilizer_max_yaw_jump_deg: float = 20.0
+    online_stabilizer_min_icp_inlier_ratio: float = 0.55
+    online_stabilizer_min_bev_score: float = 0.08
+    online_stabilizer_score_margin: float = 0.20
+    online_stabilizer_temporal_bonus: float = 0.10
+    online_stabilizer_fallback_to_tracker: bool = True
+    use_online_patch_hysteresis: bool = True
+    online_patch_switch_margin: float = 0.05
+    use_persistent_patch_override: bool = False
+    persistent_patch_override_pairs: tuple[tuple[int, int], ...] = ()
+    persistent_patch_override_topn: int = 4
+    persistent_patch_override_min_run_length: int = 6
+    persistent_patch_override_min_geometry_score: float = 1.10
+    use_top2_confusion_geometry_override: bool = False
+    top2_confusion_pairs: tuple[tuple[int, int], ...] = ()
+    top2_confusion_final_gap_max: float = 0.30
+    top2_confusion_bev_weight: float = 0.80
+    top2_confusion_inlier_weight: float = 1.20
+    top2_confusion_rmse_weight: float = 0.30
+    top2_confusion_geometry_margin: float = 0.0
+    candidate_reranker_checkpoint_path: str | None = None
+    candidate_reranker_score_weight: float = 0.20
+    use_candidate_reranker_top2_override: bool = False
+    candidate_reranker_top2_probability_min: float = 0.80
+    candidate_reranker_top2_margin_min: float = 0.20
+    candidate_reranker_top2_final_gap_max: float = 0.25
+    candidate_reranker_top2_pairs: tuple[tuple[int, int], ...] = ()
+    confusion_pair_resolver_checkpoint_path: str | None = None
+    confusion_pair_resolver_score_weight: float = 0.20
+    confusion_pair_resolver_top2_only: bool = True
+    confusion_pair_resolver_final_gap_max: float = 0.30
+    confusion_pair_resolver_skip_if_top1_bev_score_ge: float | None = None
+    confusion_pair_resolver_skip_if_top1_inlier_ge: float | None = None
+    confusion_pair_resolver_skip_if_winner_deep_match_lower_by: float | None = None
+    confusion_pair_resolver_pair_weight_overrides: tuple[tuple[int, int, float], ...] = ()
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FineLocalizationConfig":
-        return cls(**dict(mapping))
+        payload = dict(mapping)
+        if "confusion_pair_resolver_pair_weight_overrides" in payload:
+            payload["confusion_pair_resolver_pair_weight_overrides"] = tuple(
+                (int(item[0]), int(item[1]), float(item[2]))
+                for item in payload["confusion_pair_resolver_pair_weight_overrides"]
+            )
+        if "candidate_reranker_top2_pairs" in payload:
+            payload["candidate_reranker_top2_pairs"] = tuple(
+                (int(item[0]), int(item[1]))
+                for item in payload["candidate_reranker_top2_pairs"]
+            )
+        if "persistent_patch_override_pairs" in payload:
+            payload["persistent_patch_override_pairs"] = tuple(
+                (int(item[0]), int(item[1]))
+                for item in payload["persistent_patch_override_pairs"]
+            )
+        return cls(**payload)
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "FineLocalizationConfig":

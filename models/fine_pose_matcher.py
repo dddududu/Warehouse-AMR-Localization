@@ -266,6 +266,7 @@ class FinePoseMatcher(nn.Module):
         match_logit = self.match_head(fused).squeeze(1)
         return {
             "match_logit": match_logit.reshape(batch_size, num_candidates),
+            "pair_embedding": fused.reshape(batch_size, num_candidates, -1),
             "pose": pose.reshape(batch_size, num_candidates, 3),
             "x_bin_logits": x_bin_logits.reshape(batch_size, num_candidates, self.num_xy_bins),
             "y_bin_logits": y_bin_logits.reshape(batch_size, num_candidates, self.num_xy_bins),

@@ -1,0 +1,54 @@
+coarse_config_path: "configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml"
+coarse_checkpoint_path: "checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt"
+descriptor_bank_path: "./cache/eval_oct12_aisle_ccw_classifier_head_stride10/descriptor_bank_Aisle_CCW.npz"
+deep_matcher_checkpoint_path: "outputs/fine_pose_matcher_v6_realtopk_stereo_geom.pt"
+confusion_pair_resolver_checkpoint_path: "outputs/confusion_pair_resolver_ccw_v1_e2.pt"
+confusion_pair_resolver_score_weight: 0.25
+confusion_pair_resolver_top2_only: true
+confusion_pair_resolver_final_gap_max: 0.06
+confusion_pair_resolver_skip_if_winner_deep_match_lower_by: 0.05
+output_json: "outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_pairresolver_guarded.json"
+topk_candidates: 5
+local_submap_size_m: 30.0
+local_submap_resolution: 0.1
+voxel_size_m: 0.3
+icp_max_iterations: 20
+icp_max_correspondence_distance_m: 1.0
+icp_min_correspondences: 24
+retrieval_score_weight: 0.2
+deep_matcher_score_weight: 0.35
+deep_pose_confidence_weight: 0.10
+icp_inlier_weight: 0.35
+icp_rmse_weight: 0.10
+temporal_weight: 0.20
+temporal_position_sigma_m: 1.5
+temporal_yaw_sigma_deg: 20.0
+use_constant_velocity_prediction: true
+use_sequence_smoothing: false
+deep_pose_init_xy_consistency_weight: 0.0
+deep_pose_init_yaw_consistency_weight: 0.0
+use_online_pose_stabilizer: true
+online_stabilizer_max_position_jump_m: 2.5
+online_stabilizer_max_yaw_jump_deg: 20.0
+online_stabilizer_min_icp_inlier_ratio: 0.55
+online_stabilizer_min_bev_score: 0.08
+online_stabilizer_score_margin: 0.20
+online_stabilizer_temporal_bonus: 0.10
+online_stabilizer_fallback_to_tracker: true
+use_online_patch_hysteresis: true
+online_patch_switch_margin: 0.30
+use_top2_confusion_geometry_override: false
+top2_confusion_pairs:
+  - [6, 9]
+  - [9, 10]
+  - [10, 11]
+  - [10, 13]
+  - [10, 14]
+  - [11, 13]
+  - [11, 14]
+  - [13, 14]
+top2_confusion_final_gap_max: 0.30
+top2_confusion_bev_weight: 0.80
+top2_confusion_inlier_weight: 1.20
+top2_confusion_rmse_weight: 0.30
+top2_confusion_geometry_margin: 0.0

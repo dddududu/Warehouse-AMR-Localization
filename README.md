@@ -92,7 +92,7 @@ python -m trainers.train_fine_pose_matcher --config configs/fine_pose_matcher_tr
 ```
 
 ```bash
-python -m localization.deep_fine_localizer --config configs/fine_localization_oct12_aisle_ccw_deep.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_deep_50f.json
+python -m localization.deep_fine_localizer --config configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online_50f.json
 ```
 
 - Model path: `models/fine_pose_matcher.py`
@@ -119,6 +119,24 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
   - checkpoint: `outputs/fine_pose_matcher_v4_stereo.pt`
   - current best validation candidate classification accuracy: `51.33%`
   - this is lower than the monocular V4 peak `69.75%`, so stereo is not promoted to the default branch yet
+- Current retained deep configs are:
+  - baseline online config: `configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online.yaml`
+  - `CCW` best deep config: `configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_pairresolver_guarded.yaml`
+  - baseline online `CW` config: `configs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_online.yaml`
+  - `CW` best deep config is the tracked `tracker_init` branch:
+    - `configs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_pairresolver_corepatch_v2_trackerinit.yaml`
+  - logic: `deep candidate scoring + deep-guided BEV initialization + ICP`, then apply online stabilization; `CW` best branch also adds `tracker_init`
+  - full `Aisle_CCW` best deep result:
+    - `outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_pairresolver_guarded_full.json`
+    - mean position error: `5.0596 m`
+    - median position error: `3.4096 m`
+    - frames below `1m`: `38.91%`
+  - full `Aisle_CW` best deep result:
+    - `outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_pairresolver_corepatch_v2_trackerinit_full.json`
+    - mean position error: `0.3879 m`
+    - median position error: `0.0752 m`
+    - mean yaw error: `0.9824 deg`
+    - frames below `1m`: `98.17%`
 
 ## Best checkpoint
 

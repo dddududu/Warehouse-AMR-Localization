@@ -139,6 +139,26 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
     - median position error: `0.0752 m`
     - mean yaw error: `0.9824 deg`
     - frames below `1m`: `98.17%`
+- Jun15-only generic deep run without directional corrections:
+  - training config: `configs/fine_pose_matcher_train_jun15_fullroutes.yaml`
+  - coarse train split config: `configs/coarse_retrieval_jun15_fullroutes_stride10.yaml`
+  - checkpoint: `outputs/fine_pose_matcher_jun15_fullroutes_generic.pt`
+  - full `Oct. 12, 2022` summary: `outputs/oct12_full_generic_jun15_summary.json`
+  - weighted full-test metrics over all 6 routes:
+    - mean position error: `9.6776 m`
+    - mean yaw error: `30.4434 deg`
+    - frames below `1m`: `59.50%`
+    - frames below `0.5m`: `58.43%`
+  - per-route results:
+    - `Aisle_CCW`: `outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `0.1073 m`, frames below `1m` `100.00%`
+    - `Aisle_CW`: `outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_trackerinit_generic_jun15.json`, mean position error `0.2581 m`, frames below `1m` `94.23%`
+    - `Hallway_Full_CW_Run_1`: `outputs/fine_localization_oct12_hallway_full_cw_run1_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `12.3353 m`, frames below `1m` `55.65%`
+    - `Hallway_Full_CW_Run_2`: `outputs/fine_localization_oct12_hallway_full_cw_run2_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `12.1099 m`, frames below `1m` `54.27%`
+    - `Hallway_Straight_CCW`: `outputs/fine_localization_oct12_hallway_straight_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `8.0271 m`, frames below `1m` `58.81%`
+    - `Hallway_Straight_CW`: `outputs/fine_localization_oct12_hallway_straight_cw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `14.7486 m`, frames below `1m` `30.17%`
+  - bottleneck:
+    - `Aisle` is already stable under the generic `tracker_init` path
+    - main failure is now long-tail collapse on `Hallway`, especially `Hallway_Straight_CW`
 
 ## Best checkpoint
 

@@ -45,6 +45,10 @@ class FineLocalizationConfig:
     deep_pose_confidence_weight: float = 0.10
     use_deep_pose_init_hypothesis: bool = True
     use_tracker_pose_init_hypothesis: bool = False
+    tracker_pose_init_consistency_max_xy_m: float | None = None
+    tracker_pose_init_consistency_max_yaw_deg: float | None = None
+    tracker_pose_init_min_inlier_ratio: float | None = None
+    tracker_pose_init_max_rmse: float | None = None
     deep_pose_init_xy_consistency_weight: float = 0.05
     deep_pose_init_yaw_consistency_weight: float = 0.01
     deep_pose_hypothesis_valid_bonus: float = 0.5

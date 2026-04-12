@@ -102,6 +102,41 @@ class DeepFineLocalizer(FineLocalizer):
             and np.isfinite(icp_result.rmse)
         )
 
+    def _tracker_pose_hypothesis_is_consistent(
+        self,
+        tracker_icp_result,
+        reference_results: list[object],
+    ) -> bool:
+        max_xy_m = self.config.tracker_pose_init_consistency_max_xy_m
+        max_yaw_deg = self.config.tracker_pose_init_consistency_max_yaw_deg
+        if max_xy_m is None or max_yaw_deg is None:
+            return True
+        tracker_pose = np.asarray(tracker_icp_result.pose_4x4, dtype=np.float64)
+        tracker_xy = tracker_pose[:2, 3]
+        tracker_yaw = yaw_from_pose_matrix(tracker_pose)
+        for reference_result in reference_results:
+            if reference_result is None or not self._is_valid_icp(reference_result):
+                continue
+            reference_pose = np.asarray(reference_result.pose_4x4, dtype=np.float64)
+            reference_xy = reference_pose[:2, 3]
+            reference_yaw = yaw_from_pose_matrix(reference_pose)
+            xy_gap_m = float(np.linalg.norm(tracker_xy - reference_xy))
+            yaw_gap_deg = abs(math.degrees(float(wrap_to_pi(tracker_yaw - reference_yaw))))
+            if xy_gap_m <= float(max_xy_m) and yaw_gap_deg <= float(max_yaw_deg):
+                return True
+        return False
+
+    def _tracker_pose_hypothesis_passes_quality_gate(self, tracker_icp_result) -> bool:
+        min_inlier_ratio = self.config.tracker_pose_init_min_inlier_ratio
+        max_rmse = self.config.tracker_pose_init_max_rmse
+        if min_inlier_ratio is not None and float(tracker_icp_result.inlier_ratio) < float(min_inlier_ratio):
+            return False
+        if max_rmse is not None:
+            rmse = float(tracker_icp_result.rmse)
+            if (not np.isfinite(rmse)) or rmse > float(max_rmse):
+                return False
+        return True
+
     def _select_best_pose_hypothesis(
         self,
         bev_match_score: float,
@@ -117,7 +152,15 @@ class DeepFineLocalizer(FineLocalizer):
         hypotheses: list[tuple[str, object, float]] = [("bev_init", bev_icp_result, float(bev_match_score))]
         if deep_pose_4x4 is not None and deep_icp_result is not None:
             hypotheses.append(("deep_init", deep_icp_result, float(deep_bev_match_score if deep_bev_match_score is not None else 0.0)))
-        if predicted_pose_4x4 is not None and tracker_icp_result is not None:
+        if (
+            predicted_pose_4x4 is not None
+            and tracker_icp_result is not None
+            and self._tracker_pose_hypothesis_passes_quality_gate(tracker_icp_result)
+            and self._tracker_pose_hypothesis_is_consistent(
+                tracker_icp_result,
+                [bev_icp_result, deep_icp_result],
+            )
+        ):
             hypotheses.append(("tracker_init", tracker_icp_result, float(bev_match_score)))
         best_source = "bev_init"
         best_result = bev_icp_result

@@ -139,27 +139,27 @@ python -m localization.deep_fine_localizer --config configs/fine_localization_oc
     - median position error: `0.0752 m`
     - mean yaw error: `0.9824 deg`
     - frames below `1m`: `98.17%`
-- Jun15-only generic deep run without directional corrections:
+- Jun15-trained generic deep run without directional corrections:
   - training config: `configs/fine_pose_matcher_train_jun15_fullroutes.yaml`
   - coarse train split config: `configs/coarse_retrieval_jun15_fullroutes_stride10.yaml`
   - checkpoint: `outputs/fine_pose_matcher_jun15_fullroutes_generic.pt`
-  - full `Oct. 12, 2022` summary: `outputs/oct12_full_generic_jun15_v2_summary.json`
+  - full `Oct. 12, 2022` summary: `outputs/oct12_full_generic_jun15_v3_summary.json`
   - weighted full-test metrics over all 6 routes:
-    - mean position error: `6.7500 m`
-    - mean yaw error: `27.1564 deg`
-    - frames below `1m`: `68.34%`
-    - frames below `0.5m`: `67.47%`
+    - mean position error: `4.6724 m`
+    - mean yaw error: `22.6473 deg`
+    - frames below `1m`: `78.75%`
+    - frames below `0.5m`: `78.34%`
   - per-route results:
     - `Aisle_CCW`: `outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `0.1073 m`, frames below `1m` `100.00%`
     - `Aisle_CW`: `outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_trackerinit_generic_jun15.json`, mean position error `0.2581 m`, frames below `1m` `94.23%`
     - `Hallway_Full_CW_Run_1`: `outputs/fine_localization_oct12_hallway_full_cw_run1_deep_v6_guidedbev_generic_jun15coarse_trackerquality.json`, mean position error `8.2763 m`, frames below `1m` `60.83%`
     - `Hallway_Full_CW_Run_2`: `outputs/fine_localization_oct12_hallway_full_cw_run2_deep_v6_guidedbev_generic_jun15coarse_trackerquality.json`, mean position error `4.0132 m`, frames below `1m` `85.78%`
     - `Hallway_Straight_CCW`: `outputs/fine_localization_oct12_hallway_straight_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `8.0271 m`, frames below `1m` `58.81%`
-    - `Hallway_Straight_CW`: `outputs/fine_localization_oct12_hallway_straight_cw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `14.7486 m`, frames below `1m` `30.17%`
+    - `Hallway_Straight_CW`: `outputs/fine_localization_oct12_hallway_straight_cw_deep_v6_guidedbev_generic_jun15coarse_trackerquality_full.json`, mean position error `3.6948 m`, frames below `1m` `85.58%`
   - bottleneck:
     - `Aisle` is already stable under the generic branch
-    - `Hallway_Full` improves by gating `tracker_init` with ICP quality instead of disabling it
-    - main remaining failure is now `Hallway_Straight_CW`
+    - `Hallway_Full` and `Hallway_Straight_CW` improve by gating `tracker_init` with ICP quality instead of disabling it
+    - main remaining failure is now `Hallway_Straight_CCW`
 
 ## Best checkpoint
 

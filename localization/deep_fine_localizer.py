@@ -139,15 +139,22 @@ class DeepFineLocalizer(FineLocalizer):
 
     def _select_best_pose_hypothesis(
         self,
+        patch_id: int,
         bev_match_score: float,
         bev_icp_result,
         deep_bev_match_score: float | None,
         deep_pose_4x4: np.ndarray | None,
         deep_icp_result,
         tracker_icp_result,
+        candidate_deep_match_probability: float,
         predicted_world_xy: np.ndarray,
         predicted_yaw_deg: float,
         predicted_pose_4x4: np.ndarray | None,
+        tracker_selected_streak: int = 0,
+        previous_selected_patch_streak: int = 0,
+        previous_selected_patch_id: int | None = None,
+        previous_selected_patch_deep_prob: float | None = None,
+        previous_selected_init_source: str | None = None,
     ) -> tuple[str, object, float]:
         hypotheses: list[tuple[str, object, float]] = [("bev_init", bev_icp_result, float(bev_match_score))]
         if deep_pose_4x4 is not None and deep_icp_result is not None:
@@ -165,8 +172,8 @@ class DeepFineLocalizer(FineLocalizer):
         best_source = "bev_init"
         best_result = bev_icp_result
         best_temporal = self._temporal_score(bev_icp_result.pose_4x4, predicted_pose_4x4)
-        best_score = -1.0e18
         predicted_yaw_rad = math.radians(float(predicted_yaw_deg))
+        scored_hypotheses: list[tuple[str, object, float, float]] = []
         for source, result, hypothesis_bev_score in hypotheses:
             pose_xy = np.asarray(result.pose_4x4[:2, 3], dtype=np.float64)
             pose_yaw_rad = yaw_from_pose_matrix(result.pose_4x4)
@@ -189,6 +196,125 @@ class DeepFineLocalizer(FineLocalizer):
                 - float(self.config.deep_pose_init_xy_consistency_weight) * float(xy_error_m)
                 - float(self.config.deep_pose_init_yaw_consistency_weight) * float(yaw_error_deg)
             )
+            scored_hypotheses.append((source, result, float(temporal_score), float(hypothesis_score)))
+
+        tracker_deep_prob_min = self.config.tracker_pose_init_candidate_deep_prob_min
+        tracker_required_margin = float(self.config.tracker_pose_init_required_margin_when_deep_low)
+        if tracker_deep_prob_min is not None and float(candidate_deep_match_probability) < float(tracker_deep_prob_min):
+            best_non_tracker_score = max(
+                (
+                    score
+                    for source, _, _, score in scored_hypotheses
+                    if source != "tracker_init"
+                ),
+                default=-1.0e18,
+            )
+            filtered_hypotheses: list[tuple[str, object, float, float]] = []
+            for source, result, temporal_score, hypothesis_score in scored_hypotheses:
+                if (
+                    source == "tracker_init"
+                    and hypothesis_score < best_non_tracker_score + tracker_required_margin
+                ):
+                    continue
+                filtered_hypotheses.append((source, result, temporal_score, hypothesis_score))
+            if filtered_hypotheses:
+                scored_hypotheses = filtered_hypotheses
+
+        tracker_deep_prob_high = self.config.tracker_pose_init_candidate_deep_prob_high
+        tracker_required_margin_high = float(self.config.tracker_pose_init_required_margin_when_deep_high)
+        if tracker_deep_prob_high is not None and float(candidate_deep_match_probability) >= float(tracker_deep_prob_high):
+            best_non_tracker_score = max(
+                (
+                    score
+                    for source, _, _, score in scored_hypotheses
+                    if source != "tracker_init"
+                ),
+                default=-1.0e18,
+            )
+            filtered_hypotheses: list[tuple[str, object, float, float]] = []
+            for source, result, temporal_score, hypothesis_score in scored_hypotheses:
+                if (
+                    source == "tracker_init"
+                    and hypothesis_score < best_non_tracker_score + tracker_required_margin_high
+                ):
+                    continue
+                filtered_hypotheses.append((source, result, temporal_score, hypothesis_score))
+                if filtered_hypotheses:
+                    scored_hypotheses = filtered_hypotheses
+
+        tracker_release_streak_min = self.config.tracker_pose_init_release_streak_min
+        tracker_release_deep_prob_min = self.config.tracker_pose_init_release_candidate_deep_prob_min
+        tracker_release_required_margin = float(self.config.tracker_pose_init_release_required_margin)
+        if (
+            tracker_release_streak_min is not None
+            and tracker_selected_streak >= int(tracker_release_streak_min)
+            and (
+                tracker_release_deep_prob_min is None
+                or float(candidate_deep_match_probability) >= float(tracker_release_deep_prob_min)
+            )
+        ):
+            best_non_tracker_score = max(
+                (
+                    score
+                    for source, _, _, score in scored_hypotheses
+                    if source != "tracker_init"
+                ),
+                default=-1.0e18,
+            )
+            filtered_hypotheses: list[tuple[str, object, float, float]] = []
+            for source, result, temporal_score, hypothesis_score in scored_hypotheses:
+                if (
+                    source == "tracker_init"
+                    and hypothesis_score < best_non_tracker_score + tracker_release_required_margin
+                ):
+                    continue
+                filtered_hypotheses.append((source, result, temporal_score, hypothesis_score))
+            if filtered_hypotheses:
+                scored_hypotheses = filtered_hypotheses
+
+        sticky_patch_streak_min = self.config.tracker_pose_init_sticky_patch_streak_min
+        sticky_prev_deep_prob_max = self.config.tracker_pose_init_sticky_prev_deep_prob_max
+        sticky_candidate_deep_prob_min = self.config.tracker_pose_init_sticky_candidate_deep_prob_min
+        sticky_required_margin = float(self.config.tracker_pose_init_sticky_required_margin)
+        if (
+            sticky_patch_streak_min is not None
+            and previous_selected_init_source == "tracker_init"
+            and previous_selected_patch_streak >= int(sticky_patch_streak_min)
+            and previous_selected_patch_id is not None
+            and int(patch_id) == int(previous_selected_patch_id)
+            and (
+                sticky_prev_deep_prob_max is None
+                or (
+                    previous_selected_patch_deep_prob is not None
+                    and float(previous_selected_patch_deep_prob) <= float(sticky_prev_deep_prob_max)
+                )
+            )
+            and (
+                sticky_candidate_deep_prob_min is None
+                or float(candidate_deep_match_probability) >= float(sticky_candidate_deep_prob_min)
+            )
+        ):
+            best_non_tracker_score = max(
+                (
+                    score
+                    for source, _, _, score in scored_hypotheses
+                    if source != "tracker_init"
+                ),
+                default=-1.0e18,
+            )
+            filtered_hypotheses: list[tuple[str, object, float, float]] = []
+            for source, result, temporal_score, hypothesis_score in scored_hypotheses:
+                if (
+                    source == "tracker_init"
+                    and hypothesis_score < best_non_tracker_score + sticky_required_margin
+                ):
+                    continue
+                filtered_hypotheses.append((source, result, temporal_score, hypothesis_score))
+            if filtered_hypotheses:
+                scored_hypotheses = filtered_hypotheses
+
+        best_score = -1.0e18
+        for source, result, temporal_score, hypothesis_score in scored_hypotheses:
             if hypothesis_score > best_score:
                 best_score = hypothesis_score
                 best_source = source
@@ -269,6 +395,12 @@ class DeepFineLocalizer(FineLocalizer):
         self,
         frame_idx: int,
         predicted_pose_4x4: np.ndarray | None = None,
+        tracker_pose_init_4x4: np.ndarray | None = None,
+        tracker_selected_streak: int = 0,
+        previous_selected_patch_streak: int = 0,
+        previous_selected_patch_id: int | None = None,
+        previous_selected_patch_deep_prob: float | None = None,
+        previous_selected_init_source: str | None = None,
     ) -> tuple[list[dict[str, object]], dict[str, np.ndarray]]:
         self._active_frame_idx = int(frame_idx)
         query_points = self._build_query_points(frame_idx)
@@ -381,26 +513,39 @@ class DeepFineLocalizer(FineLocalizer):
                     max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
                     min_correspondences=self.config.icp_min_correspondences,
                 )
-            if bool(self.config.use_tracker_pose_init_hypothesis) and predicted_pose_4x4 is not None:
+            if bool(self.config.use_tracker_pose_init_hypothesis) and tracker_pose_init_4x4 is not None:
                 tracker_icp_result = refine_pose_with_icp(
                     query_points_xyz_sensor=query_points,
                     map_points_xyz_world=submap.points_xyz_world,
-                    initial_pose_4x4=np.asarray(predicted_pose_4x4, dtype=np.float64),
+                    initial_pose_4x4=np.asarray(tracker_pose_init_4x4, dtype=np.float64),
                     voxel_size_m=self.config.voxel_size_m,
                     max_iterations=self.config.icp_max_iterations,
                     max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
                     min_correspondences=self.config.icp_min_correspondences,
                 )
             selected_init_source, icp_result, temporal_score = self._select_best_pose_hypothesis(
+                patch_id=int(candidate["patch_id"]),
                 bev_match_score=float(bev_match.score),
                 bev_icp_result=bev_icp_result,
                 deep_bev_match_score=float(deep_guided_bev_match.score) if deep_guided_bev_match is not None else None,
                 deep_pose_4x4=deep_initial_pose_4x4,
                 deep_icp_result=deep_icp_result,
                 tracker_icp_result=tracker_icp_result,
+                candidate_deep_match_probability=float(deep_prediction["match_probability"][candidate_idx]),
                 predicted_world_xy=np.asarray(predicted_world_xy, dtype=np.float64),
                 predicted_yaw_deg=predicted_yaw_deg,
                 predicted_pose_4x4=predicted_pose_4x4,
+                tracker_selected_streak=int(tracker_selected_streak),
+                previous_selected_patch_streak=int(previous_selected_patch_streak),
+                previous_selected_patch_id=(
+                    None if previous_selected_patch_id is None else int(previous_selected_patch_id)
+                ),
+                previous_selected_patch_deep_prob=(
+                    None
+                    if previous_selected_patch_deep_prob is None
+                    else float(previous_selected_patch_deep_prob)
+                ),
+                previous_selected_init_source=previous_selected_init_source,
             )
             candidate_pose = np.asarray(icp_result.pose_4x4, dtype=np.float64)
             temporal_position_jump_m, temporal_yaw_jump_deg = self._temporal_jump_metrics(
@@ -551,10 +696,28 @@ class DeepFineLocalizer(FineLocalizer):
                     )
         return candidate_results, deep_prediction
 
-    def localize_frame(self, frame_idx: int, predicted_pose_4x4: np.ndarray | None = None) -> dict[str, object]:
+    def localize_frame(
+        self,
+        frame_idx: int,
+        predicted_pose_4x4: np.ndarray | None = None,
+        tracker_pose_init_4x4: np.ndarray | None = None,
+        tracker_selected_streak: int = 0,
+        previous_selected_patch_streak: int = 0,
+        previous_selected_patch_id: int | None = None,
+        previous_selected_patch_deep_prob: float | None = None,
+        previous_selected_init_source: str | None = None,
+    ) -> dict[str, object]:
         candidate_results, _ = self._build_frame_candidate_results(
             frame_idx=frame_idx,
             predicted_pose_4x4=predicted_pose_4x4,
+            tracker_pose_init_4x4=tracker_pose_init_4x4,
+            tracker_selected_streak=int(tracker_selected_streak),
+            previous_selected_patch_streak=int(previous_selected_patch_streak),
+            previous_selected_patch_id=(
+                None if previous_selected_patch_id is None else int(previous_selected_patch_id)
+            ),
+            previous_selected_patch_deep_prob=previous_selected_patch_deep_prob,
+            previous_selected_init_source=previous_selected_init_source,
         )
         candidate_results.sort(key=lambda item: float(item["final_score"]), reverse=True)
         best_candidate = candidate_results[0]
@@ -569,7 +732,8 @@ class DeepFineLocalizer(FineLocalizer):
             "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
             "best_patch_id": int(best_candidate["patch_id"]),
             "pred_pose_4x4": best_candidate["final_pose_4x4"],
-            "predicted_pose_4x4_from_tracker": predicted_pose_4x4.tolist() if predicted_pose_4x4 is not None else None,
+            "predicted_pose_4x4_from_tracker": tracker_pose_init_4x4.tolist() if tracker_pose_init_4x4 is not None else None,
+            "predicted_pose_4x4_temporal_prior": predicted_pose_4x4.tolist() if predicted_pose_4x4 is not None else None,
             "position_error_m": position_error_m,
             "yaw_error_deg": float(yaw_error_deg),
             "used_tracker_fallback": False,
@@ -651,6 +815,53 @@ def localize_sequence(
     output_path = str(output_json) if output_json is not None else localizer.config.output_json
     frame_results: list[dict[str, object]] = []
     accepted_poses: list[np.ndarray] = []
+
+    def _current_tracker_selected_streak(accepted_frame_results: list[dict[str, object]]) -> int:
+        streak = 0
+        for item in reversed(accepted_frame_results):
+            candidate_results = list(item.get("candidate_results", []))
+            if not candidate_results:
+                break
+            selected_idx = item.get("selected_candidate_index")
+            if selected_idx is None or int(selected_idx) < 0 or int(selected_idx) >= len(candidate_results):
+                break
+            selected_candidate = candidate_results[int(selected_idx)]
+            if selected_candidate.get("selected_init_source") != "tracker_init":
+                break
+            streak += 1
+        return int(streak)
+
+    def _current_selected_patch_context(
+        accepted_frame_results: list[dict[str, object]],
+    ) -> tuple[int, int | None, float | None, str | None]:
+        if not accepted_frame_results:
+            return 0, None, None, None
+        last_item = accepted_frame_results[-1]
+        candidate_results = list(last_item.get("candidate_results", []))
+        selected_idx = last_item.get("selected_candidate_index")
+        if selected_idx is None or int(selected_idx) < 0 or int(selected_idx) >= len(candidate_results):
+            return 0, None, None, None
+        selected_candidate = candidate_results[int(selected_idx)]
+        selected_patch_id = int(selected_candidate.get("patch_id", -1))
+        streak = 0
+        for item in reversed(accepted_frame_results):
+            current_candidates = list(item.get("candidate_results", []))
+            current_idx = item.get("selected_candidate_index")
+            if current_idx is None or int(current_idx) < 0 or int(current_idx) >= len(current_candidates):
+                break
+            current_candidate = current_candidates[int(current_idx)]
+            if int(current_candidate.get("patch_id", -1)) != selected_patch_id:
+                break
+            streak += 1
+        return (
+            int(streak),
+            int(selected_patch_id),
+            None
+            if selected_candidate.get("deep_match_probability") is None
+            else float(selected_candidate["deep_match_probability"]),
+            selected_candidate.get("selected_init_source"),
+        )
+
     start_offset = 0
     if output_path is not None and bool(resume):
         existing_path = Path(output_path)
@@ -671,8 +882,28 @@ def localize_sequence(
                 ]
                 start_offset = len(valid_results)
     for list_idx, frame_idx in enumerate(frame_indices[start_offset:], start=start_offset):
-        predicted_pose_4x4 = localizer._predict_pose_4x4(accepted_poses)
-        frame_result = localizer.localize_frame(frame_idx, predicted_pose_4x4=predicted_pose_4x4)
+        temporal_prior_pose_4x4 = localizer._predict_motion_prior_4x4(accepted_poses)
+        predicted_pose_4x4 = localizer._predict_pose_4x4(
+            accepted_poses,
+            accepted_frame_results=frame_results,
+        )
+        tracker_selected_streak = _current_tracker_selected_streak(frame_results)
+        previous_selected_patch_streak, previous_selected_patch_id, previous_selected_patch_deep_prob, previous_selected_init_source = (
+            _current_selected_patch_context(frame_results)
+        )
+        frame_result = localizer.localize_frame(
+            frame_idx,
+            predicted_pose_4x4=temporal_prior_pose_4x4,
+            tracker_pose_init_4x4=predicted_pose_4x4,
+            tracker_selected_streak=tracker_selected_streak,
+            previous_selected_patch_streak=previous_selected_patch_streak,
+            previous_selected_patch_id=previous_selected_patch_id,
+            previous_selected_patch_deep_prob=previous_selected_patch_deep_prob,
+            previous_selected_init_source=previous_selected_init_source,
+        )
+        if bool(localizer.config.apply_online_patch_hysteresis_during_tracking):
+            online_results = localizer._apply_online_patch_hysteresis(frame_results + [frame_result])
+            frame_result = online_results[-1]
         frame_results.append(frame_result)
         accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))
         if output_path is not None and int(save_every) > 0 and ((list_idx + 1) % int(save_every) == 0):
@@ -684,7 +915,8 @@ def localize_sequence(
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(partial_report, indent=2), encoding="utf-8")
-    frame_results = localizer._apply_online_patch_hysteresis(frame_results)
+    if not bool(localizer.config.apply_online_patch_hysteresis_during_tracking):
+        frame_results = localizer._apply_online_patch_hysteresis(frame_results)
     frame_results = localizer._apply_persistent_patch_override(frame_results)
     frame_results = localizer._apply_sequence_smoothing(frame_results)
     report = _build_localization_report(

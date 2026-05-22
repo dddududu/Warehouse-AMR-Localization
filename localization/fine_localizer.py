@@ -149,7 +149,7 @@ class FineLocalizer:
             for idx in ranking
         ]
 
-    def _predict_pose_4x4(self, accepted_poses: list[np.ndarray]) -> np.ndarray | None:
+    def _predict_motion_prior_4x4(self, accepted_poses: list[np.ndarray]) -> np.ndarray | None:
         if not accepted_poses:
             return None
         if len(accepted_poses) < 2 or not self.config.use_constant_velocity_prediction:
@@ -166,6 +166,83 @@ class FineLocalizer:
         predicted_pose[:2, 3] = predicted_xy
         predicted_pose[:3, :3] = pose_from_xy_yaw_z(0.0, 0.0, predicted_yaw)[:3, :3]
         return predicted_pose
+
+    def _predict_pose_4x4(
+        self,
+        accepted_poses: list[np.ndarray],
+        accepted_frame_results: list[Mapping[str, Any]] | None = None,
+    ) -> np.ndarray | None:
+        if not accepted_poses:
+            return None
+        disable_hysteresis_streak = self.config.tracker_pose_init_disable_hysteresis_streak
+        disable_hysteresis_min_deep_prob = self.config.tracker_pose_init_disable_hysteresis_min_deep_prob
+        if (
+            disable_hysteresis_streak is not None
+            and disable_hysteresis_streak > 0
+            and accepted_frame_results is not None
+        ):
+            hysteresis_run_length = 0
+            challenger_patch_id: int | None = None
+            retained_patch_id: int | None = None
+            for item in reversed(accepted_frame_results):
+                if str(item.get("selection_mode")) != "online_patch_hysteresis":
+                    break
+                state = item.get("online_patch_hysteresis_state")
+                if not isinstance(state, Mapping):
+                    break
+                if str(state.get("previous_selected_init_source") or "") != "tracker_init":
+                    break
+                proposed_deep = float(state.get("proposed_deep_match_probability", 0.0))
+                if (
+                    disable_hysteresis_min_deep_prob is not None
+                    and proposed_deep < float(disable_hysteresis_min_deep_prob)
+                ):
+                    break
+                current_challenger = int(state.get("proposed_patch_id", -1))
+                current_retained = int(state.get("previous_patch_id", -1))
+                if challenger_patch_id is None:
+                    challenger_patch_id = current_challenger
+                    retained_patch_id = current_retained
+                elif challenger_patch_id != current_challenger or retained_patch_id != current_retained:
+                    break
+                hysteresis_run_length += 1
+            if hysteresis_run_length >= int(disable_hysteresis_streak):
+                return None
+        disable_after_override_frames = self.config.tracker_pose_init_disable_after_override_frames
+        disable_after_override_min_deep_prob = self.config.tracker_pose_init_disable_after_override_min_deep_prob
+        if (
+            disable_after_override_frames is not None
+            and disable_after_override_frames > 0
+            and accepted_frame_results is not None
+        ):
+            for item in reversed(accepted_frame_results[-int(disable_after_override_frames):]):
+                override = item.get("online_patch_hysteresis_override")
+                if not isinstance(override, Mapping):
+                    continue
+                if str(override.get("previous_selected_init_source") or "") != "tracker_init":
+                    continue
+                proposed_deep = float(override.get("proposed_deep_match_probability", 0.0))
+                if (
+                    disable_after_override_min_deep_prob is not None
+                    and proposed_deep < float(disable_after_override_min_deep_prob)
+                ):
+                    continue
+                return None
+        stable_min_frames = self.config.tracker_pose_init_patch_stable_min_frames
+        if (
+            stable_min_frames is not None
+            and stable_min_frames > 1
+            and accepted_frame_results is not None
+        ):
+            if len(accepted_frame_results) < int(stable_min_frames):
+                return None
+            recent_patch_ids = [
+                int(item.get("best_patch_id", -1))
+                for item in accepted_frame_results[-int(stable_min_frames):]
+            ]
+            if any(patch_id != recent_patch_ids[-1] for patch_id in recent_patch_ids[:-1]):
+                return None
+        return self._predict_motion_prior_4x4(accepted_poses)
 
     def _temporal_score(self, pose_4x4: np.ndarray, predicted_pose_4x4: np.ndarray | None) -> float:
         if predicted_pose_4x4 is None or float(self.config.temporal_weight) <= 0.0:
@@ -716,13 +793,41 @@ class FineLocalizer:
         if not frame_results or not bool(self.config.use_online_patch_hysteresis):
             return frame_results
         switch_margin = float(self.config.online_patch_switch_margin)
+        force_prev_max = self.config.online_patch_switch_force_prev_deep_prob_max
+        force_proposed_min = self.config.online_patch_switch_force_proposed_deep_prob_min
+        force_min_advantage = float(self.config.online_patch_switch_force_min_score_advantage)
+        challenger_min_deep_prob = self.config.online_patch_challenger_min_deep_prob
+        challenger_min_support = self.config.online_patch_challenger_min_support
+        challenger_min_streak = (
+            None
+            if self.config.online_patch_challenger_min_streak is None
+            else max(1, int(self.config.online_patch_challenger_min_streak))
+        )
+        tracker_release_min_streak = (
+            None
+            if self.config.online_patch_tracker_release_min_streak is None
+            else max(1, int(self.config.online_patch_tracker_release_min_streak))
+        )
+        tracker_release_prev_deep_prob_max = self.config.online_patch_tracker_release_prev_deep_prob_max
+        tracker_release_prev_support_max = self.config.online_patch_tracker_release_prev_support_max
+        dynamic_margin_min_scale = max(0.0, float(self.config.online_patch_dynamic_margin_min_scale))
+        dynamic_margin_max_scale = max(dynamic_margin_min_scale, float(self.config.online_patch_dynamic_margin_max_scale))
+        dynamic_margin_tracker_factor = max(0.0, float(self.config.online_patch_dynamic_margin_tracker_factor))
         stabilized_results: list[dict[str, Any]] = []
         previous_patch_id: int | None = None
+        challenger_patch_id: int | None = None
+        challenger_run_length = 0
+
+        def _candidate_support(candidate: Mapping[str, Any]) -> float:
+            return float(self._online_candidate_support(candidate))
+
         for frame_result in frame_results:
             candidate_results = list(frame_result.get("candidate_results", []))
             if not candidate_results:
                 stabilized_results.append(frame_result)
                 previous_patch_id = int(frame_result["best_patch_id"])
+                challenger_patch_id = None
+                challenger_run_length = 0
                 continue
             proposed_idx = 0
             proposed_candidate = candidate_results[proposed_idx]
@@ -733,25 +838,154 @@ class FineLocalizer:
                 )
                 if (
                     previous_patch_candidate is not None
-                    and float(proposed_candidate["final_score"])
-                    < float(previous_patch_candidate["final_score"]) + switch_margin
                 ):
-                    previous_idx = next(
-                        idx for idx, candidate in enumerate(candidate_results)
-                        if int(candidate["patch_id"]) == previous_patch_id
+                    proposed_score = float(proposed_candidate["final_score"])
+                    previous_score = float(previous_patch_candidate["final_score"])
+                    proposed_deep = float(proposed_candidate.get("deep_match_probability", 0.0))
+                    previous_deep = float(previous_patch_candidate.get("deep_match_probability", 0.0))
+                    proposed_support = _candidate_support(proposed_candidate)
+                    previous_support = _candidate_support(previous_patch_candidate)
+                    previous_selected_init = str(previous_patch_candidate.get("selected_init_source") or "")
+
+                    strong_challenger = (
+                        (challenger_min_deep_prob is None or proposed_deep >= float(challenger_min_deep_prob))
+                        and (challenger_min_support is None or proposed_support >= float(challenger_min_support))
                     )
-                    updated = self._replace_selected_candidate(
-                        frame_result,
-                        candidate_results,
-                        previous_idx,
-                        selection_mode="online_patch_hysteresis",
-                        selected_candidate_score=float(previous_patch_candidate["final_score"]),
+                    proposed_patch_id = int(proposed_candidate["patch_id"])
+                    if strong_challenger:
+                        if challenger_patch_id == proposed_patch_id:
+                            challenger_run_length += 1
+                        else:
+                            challenger_patch_id = proposed_patch_id
+                            challenger_run_length = 1
+                    else:
+                        challenger_patch_id = None
+                        challenger_run_length = 0
+
+                    previous_retention = 0.5 * previous_support + 0.5 * previous_deep
+                    challenger_pressure = 0.5 * proposed_support + 0.5 * proposed_deep
+                    if dynamic_margin_max_scale > dynamic_margin_min_scale:
+                        raw_scale = 1.0 + (previous_retention - challenger_pressure)
+                        dynamic_scale = float(
+                            np.clip(raw_scale, dynamic_margin_min_scale, dynamic_margin_max_scale)
+                        )
+                    else:
+                        dynamic_scale = dynamic_margin_min_scale
+                    if previous_selected_init == "tracker_init":
+                        dynamic_scale *= dynamic_margin_tracker_factor
+                    dynamic_margin = float(switch_margin) * float(dynamic_scale)
+
+                    force_switch_streak_ok = (
+                        challenger_min_streak is None
+                        or (
+                            strong_challenger
+                            and challenger_run_length >= challenger_min_streak
+                        )
                     )
-                    stabilized_results.append(updated)
-                    previous_patch_id = int(updated["best_patch_id"])
-                    continue
+                    force_switch = (
+                        force_prev_max is not None
+                        and force_proposed_min is not None
+                        and previous_deep <= float(force_prev_max)
+                        and proposed_deep >= float(force_proposed_min)
+                        and proposed_score >= previous_score + force_min_advantage
+                        and force_switch_streak_ok
+                    )
+                    streak_switch = (
+                        challenger_min_streak is not None
+                        and challenger_min_streak > 0
+                        and strong_challenger
+                        and challenger_run_length >= challenger_min_streak
+                        and proposed_score >= previous_score + force_min_advantage
+                    )
+                    tracker_release_switch = (
+                        tracker_release_min_streak is not None
+                        and tracker_release_min_streak > 0
+                        and previous_selected_init == "tracker_init"
+                        and strong_challenger
+                        and challenger_run_length >= tracker_release_min_streak
+                        and proposed_score >= previous_score + force_min_advantage
+                        and (
+                            tracker_release_prev_deep_prob_max is None
+                            or previous_deep <= float(tracker_release_prev_deep_prob_max)
+                        )
+                        and (
+                            tracker_release_prev_support_max is None
+                            or previous_support <= float(tracker_release_prev_support_max)
+                        )
+                    )
+                    if (
+                        not force_switch
+                        and not streak_switch
+                        and not tracker_release_switch
+                        and proposed_score < previous_score + dynamic_margin
+                    ):
+                        previous_idx = next(
+                            idx for idx, candidate in enumerate(candidate_results)
+                            if int(candidate["patch_id"]) == previous_patch_id
+                        )
+                        updated = self._replace_selected_candidate(
+                            frame_result,
+                            candidate_results,
+                            previous_idx,
+                            selection_mode="online_patch_hysteresis",
+                            selected_candidate_score=float(previous_patch_candidate["final_score"]),
+                        )
+                        updated["online_patch_hysteresis_state"] = {
+                            "previous_patch_id": int(previous_patch_id),
+                            "proposed_patch_id": int(proposed_candidate["patch_id"]),
+                            "previous_final_score": previous_score,
+                            "proposed_final_score": proposed_score,
+                            "previous_deep_match_probability": previous_deep,
+                            "proposed_deep_match_probability": proposed_deep,
+                            "previous_support": previous_support,
+                            "proposed_support": proposed_support,
+                            "challenger_run_length": int(challenger_run_length),
+                            "dynamic_margin": float(dynamic_margin),
+                            "previous_selected_init_source": previous_selected_init,
+                        }
+                        stabilized_results.append(updated)
+                        previous_patch_id = int(updated["best_patch_id"])
+                        challenger_patch_id = proposed_patch_id if strong_challenger else None
+                        continue
+                    if force_switch or streak_switch or tracker_release_switch:
+                        if tracker_release_switch:
+                            selection_mode = "online_patch_hysteresis_tracker_release"
+                        elif streak_switch:
+                            selection_mode = "online_patch_hysteresis_challenger_streak"
+                        else:
+                            selection_mode = "online_patch_hysteresis_deep_override"
+                        updated = self._replace_selected_candidate(
+                            frame_result,
+                            candidate_results,
+                            proposed_idx,
+                            selection_mode=selection_mode,
+                            selected_candidate_score=proposed_score,
+                        )
+                        updated["online_patch_hysteresis_override"] = {
+                            "previous_patch_id": int(previous_patch_id),
+                            "proposed_patch_id": int(proposed_candidate["patch_id"]),
+                            "previous_deep_match_probability": previous_deep,
+                            "proposed_deep_match_probability": proposed_deep,
+                            "previous_final_score": previous_score,
+                            "proposed_final_score": proposed_score,
+                            "previous_support": previous_support,
+                            "proposed_support": proposed_support,
+                            "challenger_run_length": int(challenger_run_length),
+                            "dynamic_margin": float(dynamic_margin),
+                            "previous_selected_init_source": previous_selected_init,
+                            "force_switch": bool(force_switch),
+                            "streak_switch": bool(streak_switch),
+                            "tracker_release_switch": bool(tracker_release_switch),
+                        }
+                        stabilized_results.append(updated)
+                        previous_patch_id = int(updated["best_patch_id"])
+                        challenger_patch_id = None
+                        challenger_run_length = 0
+                        continue
             stabilized_results.append(frame_result)
             previous_patch_id = int(frame_result["best_patch_id"])
+            challenger_patch_id = None
+            challenger_run_length = 0
         return stabilized_results
 
     def _apply_persistent_patch_override(
@@ -847,7 +1081,10 @@ def localize_sequence(
     frame_results: list[dict[str, Any]] = []
     accepted_poses: list[np.ndarray] = []
     for frame_idx in frame_indices:
-        predicted_pose_4x4 = localizer._predict_pose_4x4(accepted_poses)
+        predicted_pose_4x4 = localizer._predict_pose_4x4(
+            accepted_poses,
+            accepted_frame_results=frame_results,
+        )
         frame_result = localizer.localize_frame(frame_idx, predicted_pose_4x4=predicted_pose_4x4)
         frame_results.append(frame_result)
         accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))

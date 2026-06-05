@@ -24,6 +24,11 @@ class FineLocalizationConfig:
     icp_max_iterations: int = 20
     icp_max_correspondence_distance_m: float = 1.0
     icp_min_correspondences: int = 24
+    use_semantic_dynamic_filter: bool = False
+    semantic_dynamic_labels: tuple[int, ...] = (12, 13, 14, 15)
+    semantic_dynamic_mask_dilation_px: int = 5
+    semantic_occlusion_labels: tuple[int, ...] = (13,)
+    deep_pose_init_semantic_occlusion_ratio_threshold: float | None = None
     retrieval_score_weight: float = 0.2
     bev_score_weight: float = 0.35
     icp_inlier_weight: float = 0.35
@@ -124,6 +129,14 @@ class FineLocalizationConfig:
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FineLocalizationConfig":
         payload = dict(mapping)
+        if "semantic_dynamic_labels" in payload:
+            payload["semantic_dynamic_labels"] = tuple(
+                int(label) for label in payload["semantic_dynamic_labels"]
+            )
+        if "semantic_occlusion_labels" in payload:
+            payload["semantic_occlusion_labels"] = tuple(
+                int(label) for label in payload["semantic_occlusion_labels"]
+            )
         if "confusion_pair_resolver_pair_weight_overrides" in payload:
             payload["confusion_pair_resolver_pair_weight_overrides"] = tuple(
                 (int(item[0]), int(item[1]), float(item[2]))

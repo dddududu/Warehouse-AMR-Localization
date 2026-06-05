@@ -24,6 +24,7 @@ from localization.config import load_fine_localization_config
 from localization.icp_refiner import pose_from_xy_yaw_z, refine_pose_with_icp
 from localization.submap_builder import build_local_submap
 from preprocess.bev_builder import BEVConfig
+from preprocess.dynamic_point_filter import filter_dynamic_points_by_semantics, semantic_label_ratio
 from preprocess.local_lidar_cropper import LocalCropConfig, crop_local_lidar_points
 from preprocess.map_patch_builder import PatchMetadata, build_or_load_patch_cache
 from retrieval.build_patch_database import build_patch_database
@@ -113,11 +114,36 @@ class FineLocalizer:
             y_max=self.coarse_cfg.crop_y_max,
             resolution=self.coarse_cfg.bev_resolution,
         )
+        self._semantic_occlusion_ratio_cache: dict[int, float] = {}
+
+    def _semantic_occlusion_ratio(self, frame_idx: int) -> float:
+        cached = self._semantic_occlusion_ratio_cache.get(int(frame_idx))
+        if cached is not None:
+            return cached
+        record = self.sequence_dataset.frame_index[int(frame_idx)]
+        ratio = semantic_label_ratio(
+            record.segmentation_greyscale_left_path,
+            record.segmentation_greyscale_right_path,
+            self.config.semantic_occlusion_labels,
+        )
+        self._semantic_occlusion_ratio_cache[int(frame_idx)] = float(ratio)
+        return float(ratio)
 
     def _build_query_points(self, frame_idx: int) -> np.ndarray:
-        lidar_path = self.sequence_dataset.frame_index[frame_idx].lidar_path
+        record = self.sequence_dataset.frame_index[frame_idx]
+        lidar_path = record.lidar_path
         points = load_pcd_xyz(lidar_path)
-        return crop_local_lidar_points(points, self.crop_config)
+        points = crop_local_lidar_points(points, self.crop_config)
+        if self.config.use_semantic_dynamic_filter:
+            points, _ = filter_dynamic_points_by_semantics(
+                points,
+                calibration=self.sequence_dataset.calibration,
+                segmentation_left_path=record.segmentation_greyscale_left_path,
+                segmentation_right_path=record.segmentation_greyscale_right_path,
+                dynamic_labels=self.config.semantic_dynamic_labels,
+                dilation_px=self.config.semantic_dynamic_mask_dilation_px,
+            )
+        return points
 
     def _retrieve_topk_candidates(self, frame_idx: int) -> list[dict[str, Any]]:
         query_points = self._build_query_points(frame_idx)
@@ -882,6 +908,7 @@ class FineLocalizer:
                             and challenger_run_length >= challenger_min_streak
                         )
                     )
+                    challenger_streak_ready = force_switch_streak_ok
                     force_switch = (
                         force_prev_max is not None
                         and force_proposed_min is not None
@@ -917,7 +944,10 @@ class FineLocalizer:
                         not force_switch
                         and not streak_switch
                         and not tracker_release_switch
-                        and proposed_score < previous_score + dynamic_margin
+                        and (
+                            not challenger_streak_ready
+                            or proposed_score < previous_score + dynamic_margin
+                        )
                     ):
                         previous_idx = next(
                             idx for idx, candidate in enumerate(candidate_results)

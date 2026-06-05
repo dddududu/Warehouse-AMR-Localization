@@ -320,6 +320,23 @@ class DeepFineLocalizer(FineLocalizer):
                 best_source = source
                 best_result = result
                 best_temporal = temporal_score
+        occlusion_threshold = self.config.deep_pose_init_semantic_occlusion_ratio_threshold
+        if (
+            best_source == "deep_init"
+            and occlusion_threshold is not None
+            and float(getattr(self, "_active_semantic_occlusion_ratio", 0.0)) >= float(occlusion_threshold)
+        ):
+            tracker_hypothesis = next(
+                (
+                    (result, temporal_score)
+                    for source, result, temporal_score, _ in scored_hypotheses
+                    if source == "tracker_init"
+                ),
+                None,
+            )
+            if tracker_hypothesis is not None:
+                best_source = "deep_score_tracker_pose"
+                best_result, best_temporal = tracker_hypothesis
         return best_source, best_result, float(best_temporal)
 
     def _predict_candidate_pose(
@@ -403,6 +420,11 @@ class DeepFineLocalizer(FineLocalizer):
         previous_selected_init_source: str | None = None,
     ) -> tuple[list[dict[str, object]], dict[str, np.ndarray]]:
         self._active_frame_idx = int(frame_idx)
+        self._active_semantic_occlusion_ratio = (
+            self._semantic_occlusion_ratio(frame_idx)
+            if self.config.deep_pose_init_semantic_occlusion_ratio_threshold is not None
+            else 0.0
+        )
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
         candidate_bevs = []
@@ -558,7 +580,8 @@ class DeepFineLocalizer(FineLocalizer):
             )
             selected_bev_score = (
                 float(deep_guided_bev_match.score)
-                if selected_init_source == "deep_init" and deep_guided_bev_match is not None
+                if selected_init_source in {"deep_init", "deep_score_tracker_pose"}
+                and deep_guided_bev_match is not None
                 else float(bev_match.score)
             )
             candidate_result = {
@@ -730,6 +753,7 @@ class DeepFineLocalizer(FineLocalizer):
         result = {
             "frame_idx": int(frame_idx),
             "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
+            "semantic_occlusion_ratio": float(self._active_semantic_occlusion_ratio),
             "best_patch_id": int(best_candidate["patch_id"]),
             "pred_pose_4x4": best_candidate["final_pose_4x4"],
             "predicted_pose_4x4_from_tracker": tracker_pose_init_4x4.tolist() if tracker_pose_init_4x4 is not None else None,

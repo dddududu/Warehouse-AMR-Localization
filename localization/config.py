@@ -29,6 +29,8 @@ class FineLocalizationConfig:
     semantic_dynamic_mask_dilation_px: int = 5
     semantic_occlusion_labels: tuple[int, ...] = (13,)
     deep_pose_init_semantic_occlusion_ratio_threshold: float | None = None
+    semantic_occlusion_predictor_checkpoint_path: str | None = None
+    semantic_occlusion_predictor_resize_hw: tuple[int, int] = (96, 160)
     retrieval_score_weight: float = 0.2
     bev_score_weight: float = 0.35
     icp_inlier_weight: float = 0.35
@@ -137,6 +139,9 @@ class FineLocalizationConfig:
             payload["semantic_occlusion_labels"] = tuple(
                 int(label) for label in payload["semantic_occlusion_labels"]
             )
+        resize_hw = payload.get("semantic_occlusion_predictor_resize_hw")
+        if resize_hw is not None:
+            payload["semantic_occlusion_predictor_resize_hw"] = (int(resize_hw[0]), int(resize_hw[1]))
         if "confusion_pair_resolver_pair_weight_overrides" in payload:
             payload["confusion_pair_resolver_pair_weight_overrides"] = tuple(
                 (int(item[0]), int(item[1]), float(item[2]))

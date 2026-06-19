@@ -1,0 +1,15 @@
+coarse_config_path: "configs/coarse_retrieval_jun15_fullroutes_stride10.yaml"
+output_checkpoint: "outputs/aisle_dynamic_robustness_20260619/stereo_occlusion_predictor_jun15.pt"
+cache_dir: "./cache/aisle_dynamic_robustness_20260619/occlusion_predictor"
+image_resize_hw: [96, 160]
+occlusion_threshold: 0.05
+positive_sample_weight: 12.0
+train_batch_size: 32
+train_num_workers: 0
+train_epochs: 8
+learning_rate: 0.001
+weight_decay: 0.0001
+hidden_dim: 32
+device: "cuda"
+use_amp: true
+model_seed: 0

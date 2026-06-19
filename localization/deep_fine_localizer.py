@@ -23,6 +23,7 @@ from localization.submap_builder import build_local_submap
 from models.candidate_reranker import CandidateReranker
 from models.confusion_pair_resolver import ConfusionPairResolver
 from models.fine_pose_matcher import FinePoseMatcher
+from models.occlusion_predictor import StereoOcclusionPredictor
 from preprocess.bev_builder import points_to_bev
 
 
@@ -95,12 +96,56 @@ class DeepFineLocalizer(FineLocalizer):
                 - self.sequence_dataset.calibration.T_cam2_os.translation
             )
         )
+        self.occlusion_predictor = None
+        self.occlusion_predictor_resize_hw = tuple(
+            int(value) for value in self.config.semantic_occlusion_predictor_resize_hw
+        )
+        if self.config.semantic_occlusion_predictor_checkpoint_path:
+            occlusion_checkpoint = torch.load(
+                self.config.semantic_occlusion_predictor_checkpoint_path,
+                map_location=self.device,
+            )
+            occlusion_config = occlusion_checkpoint.get("config", {})
+            self.occlusion_predictor_resize_hw = tuple(
+                int(value)
+                for value in occlusion_config.get(
+                    "image_resize_hw",
+                    self.occlusion_predictor_resize_hw,
+                )
+            )
+            self.occlusion_predictor = StereoOcclusionPredictor(
+                hidden_dim=int(occlusion_config.get("hidden_dim", 32)),
+            ).to(self.device)
+            self.occlusion_predictor.load_state_dict(occlusion_checkpoint["model"], strict=True)
+            self.occlusion_predictor.eval()
 
     def _is_valid_icp(self, icp_result) -> bool:
         return bool(
             icp_result.num_inliers >= int(self.config.icp_min_correspondences)
             and np.isfinite(icp_result.rmse)
         )
+
+    def _predict_semantic_occlusion_ratio_from_images(self, frame_idx: int) -> float | None:
+        if self.occlusion_predictor is None:
+            return None
+        record = self.sequence_dataset.frame_index[int(frame_idx)]
+        image_tensors = []
+        for image_path, camera_model in (
+            (record.image_left_path, self.sequence_dataset.camera_left),
+            (record.image_right_path, self.sequence_dataset.camera_right),
+        ):
+            image, _ = load_rgb_image(
+                image_path,
+                camera_model=camera_model,
+                use_undistort=False,
+                resize_hw=self.occlusion_predictor_resize_hw,
+            )
+            image = np.asarray(image, dtype=np.float32) / 255.0
+            image_tensors.append(np.transpose(image, (2, 0, 1)).astype(np.float32, copy=False))
+        stereo_image = torch.from_numpy(np.concatenate(image_tensors, axis=0)[None]).to(self.device).float()
+        with torch.no_grad():
+            output = self.occlusion_predictor(stereo_image)
+        return float(output["ratio"][0].detach().cpu().item())
 
     def _tracker_pose_hypothesis_is_consistent(
         self,
@@ -420,11 +465,16 @@ class DeepFineLocalizer(FineLocalizer):
         previous_selected_init_source: str | None = None,
     ) -> tuple[list[dict[str, object]], dict[str, np.ndarray]]:
         self._active_frame_idx = int(frame_idx)
-        self._active_semantic_occlusion_ratio = (
-            self._semantic_occlusion_ratio(frame_idx)
-            if self.config.deep_pose_init_semantic_occlusion_ratio_threshold is not None
-            else 0.0
-        )
+        self._active_semantic_occlusion_ratio_source = "disabled"
+        self._active_semantic_occlusion_ratio = 0.0
+        if self.config.deep_pose_init_semantic_occlusion_ratio_threshold is not None:
+            predicted_occlusion_ratio = self._predict_semantic_occlusion_ratio_from_images(frame_idx)
+            if predicted_occlusion_ratio is not None:
+                self._active_semantic_occlusion_ratio = predicted_occlusion_ratio
+                self._active_semantic_occlusion_ratio_source = "image_predictor"
+            else:
+                self._active_semantic_occlusion_ratio = self._semantic_occlusion_ratio(frame_idx)
+                self._active_semantic_occlusion_ratio_source = "semantic_label"
         query_points = self._build_query_points(frame_idx)
         candidates = self._retrieve_topk_candidates(frame_idx)
         candidate_bevs = []
@@ -754,6 +804,7 @@ class DeepFineLocalizer(FineLocalizer):
             "frame_idx": int(frame_idx),
             "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
             "semantic_occlusion_ratio": float(self._active_semantic_occlusion_ratio),
+            "semantic_occlusion_ratio_source": str(self._active_semantic_occlusion_ratio_source),
             "best_patch_id": int(best_candidate["patch_id"]),
             "pred_pose_4x4": best_candidate["final_pose_4x4"],
             "predicted_pose_4x4_from_tracker": tracker_pose_init_4x4.tolist() if tracker_pose_init_4x4 is not None else None,

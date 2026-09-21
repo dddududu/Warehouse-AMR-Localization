@@ -1,0 +1,56 @@
+output_dir: "outputs/target_motion_20260803/audit"
+analysis:
+  min_component_pixels: 96
+  min_pixel_coverage: 0.0005
+  max_gap_frames: 2
+  min_segment_frames: 3
+  hard_error_quantile: 0.95
+target_classes:
+  - class_id: 13
+    name: "person"
+    group: "dynamic"
+  - class_id: 9
+    name: "cart_pallet_jack"
+    group: "semi_dynamic"
+  - class_id: 14
+    name: "forklift_truck"
+    group: "dynamic"
+  - class_id: 12
+    name: "misc_non_static"
+    group: "dynamic"
+  - class_id: 15
+    name: "misc_dynamic"
+    group: "dynamic"
+sequences:
+  - name: "jun15_aisle_ccw_run1"
+    split: "history"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+  - name: "jun15_aisle_ccw_run2"
+    split: "train"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+  - name: "jun15_aisle_cw_run1"
+    split: "history"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+  - name: "jun15_aisle_cw_run2"
+    split: "train"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  - name: "jun23_aisle_ccw_run1"
+    split: "validation_history"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+  - name: "jun23_aisle_ccw_run2"
+    split: "validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+  - name: "jun23_aisle_cw_run1"
+    split: "validation_history"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+  - name: "jun23_aisle_cw_run2"
+    split: "validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  - name: "oct12_aisle_ccw"
+    split: "blind_test"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    localization_result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_ccw_generic_v14a_samepatchrelease_full.json"
+  - name: "oct12_aisle_cw"
+    split: "blind_test"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"
+    localization_result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_cw_generic_v14a_samepatchrelease_full.json"

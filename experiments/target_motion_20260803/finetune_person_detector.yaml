@@ -1,0 +1,31 @@
+output_dir: "outputs/target_motion_20260803/finetuned_person_detector"
+model:
+  name: "fasterrcnn_resnet50_fpn_v2"
+  freeze_backbone_except_layer4: true
+training:
+  train_frame_stride: 10
+  validation_frame_stride: 20
+  blind_test_frame_stride: 20
+  batch_size: 1
+  num_workers: 1
+  epochs: 2
+  learning_rate: 0.00005
+  weight_decay: 0.0001
+  device: "cuda"
+evaluation:
+  min_component_pixels: 96
+  match_iou_threshold: 0.30
+  confidence_thresholds: [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+person_label: 13
+splits:
+  train:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  validation:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  blind_test:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"

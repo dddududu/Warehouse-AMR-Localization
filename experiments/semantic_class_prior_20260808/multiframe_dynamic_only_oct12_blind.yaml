@@ -1,0 +1,20 @@
+sources:
+  - name: "Aisle_CCW"
+    result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_ccw_generic_v14a_samepatchrelease_full.json"
+    fine_config: "experiments/aisle_generic_20260521/fine_localization_oct12_aisle_ccw_trackerinit_generic_v14a_samepatchrelease.yaml"
+  - name: "Aisle_CW"
+    result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_cw_generic_v14a_samepatchrelease_full.json"
+    fine_config: "experiments/aisle_generic_20260521/fine_localization_oct12_aisle_cw_trackerinit_generic_v14a_samepatchrelease.yaml"
+frame_stride: 8
+dynamic_labels: [12, 13, 14, 15]
+window_size: 3
+max_history_pose_jump_m: 1.5
+voxel_size_m: 0.3
+max_iterations: 20
+max_correspondence_distance_m: 0.8
+min_correspondences: 36
+trim_ratio: 0.7
+min_inlier_ratio: 0.55
+max_delta_translation_m: 0.45
+max_delta_yaw_deg: 3.0
+output_json: "outputs/semantic_class_prior_20260808/multiframe_dynamic_only_oct12_blind_summary.json"

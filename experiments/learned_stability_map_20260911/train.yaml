@@ -1,0 +1,14 @@
+source_map_path: "outputs/semantic_stability_20260731/experiment1/semantic_stability_map.npz"
+output_dir: "outputs/learned_stability_map_20260911"
+dataset_path: "outputs/learned_stability_map_20260911/jun15_to_jun23_stability_dataset.npz"
+patch_radius_cells: 4
+minimum_initial_observations: 2
+minimum_crossday_observations: 2
+spatial_block_size_cells: 8
+validation_group: 1
+seed: 20260911
+epochs: 250
+batch_size: 128
+learning_rate: 0.003
+weight_decay: 0.0001
+use_cuda: true

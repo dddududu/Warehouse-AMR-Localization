@@ -1,0 +1,31 @@
+output_dir: "outputs/semantic_stability_20260731/experiment1"
+shared_calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+cell_size_m: 0.5
+frame_stride: 5
+min_observations_for_full_confidence: 6
+crop:
+  x_min: -10.0
+  x_max: 10.0
+  y_min: -10.0
+  y_max: 10.0
+  z_min: 0.13
+  z_max: 4.73
+sequence_entries:
+  - name: "Jun15_Aisle_CCW_Run_1"
+    role: "initial"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+  - name: "Jun15_Aisle_CW_Run_1"
+    role: "initial"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+  - name: "Jun15_Aisle_CCW_Run_2"
+    role: "same_day_validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+  - name: "Jun15_Aisle_CW_Run_2"
+    role: "same_day_validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  - name: "Jun23_Aisle_CCW_Run_1"
+    role: "cross_day_update"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+  - name: "Jun23_Aisle_CW_Run_1"
+    role: "cross_day_update"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"

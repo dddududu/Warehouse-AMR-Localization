@@ -1,0 +1,8 @@
+output_dir: "outputs/semantic_stability_20260731/experiment3"
+sequences:
+  Aisle_CCW:
+    baseline: "outputs/semantic_stability_20260731/experiment3/oct12_aisle_ccw_baseline.json"
+    reliability_gate: "outputs/semantic_stability_20260731/experiment3/oct12_aisle_ccw_reliability_gate.json"
+  Aisle_CW:
+    baseline: "outputs/semantic_stability_20260731/experiment3/oct12_aisle_cw_baseline.json"
+    reliability_gate: "outputs/semantic_stability_20260731/experiment3/oct12_aisle_cw_reliability_gate.json"

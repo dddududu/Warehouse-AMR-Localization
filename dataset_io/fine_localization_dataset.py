@@ -309,7 +309,10 @@ class DeepFineLocalizationDataset(Dataset):
 
     def _build_query_bev(self, resources: SequenceFineLocalizationResources, frame_idx: int) -> np.ndarray:
         lidar_path = resources.sequence_dataset.frame_index[frame_idx].lidar_path
-        return self._build_query_bev_from_lidar_path(lidar_path)
+        query_bev = self._build_query_bev_from_lidar_path(lidar_path)
+        if bool(self.config.zero_query_bev):
+            return np.zeros_like(query_bev, dtype=np.float32)
+        return query_bev
 
     def _build_query_bev_from_lidar_path(self, lidar_path: str | Path) -> np.ndarray:
         points = load_pcd_xyz(lidar_path)

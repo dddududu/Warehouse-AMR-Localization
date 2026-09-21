@@ -1,0 +1,25 @@
+output_dir: "outputs/target_motion_20260804/person_component_quality_audit"
+analysis:
+  frame_stride: 5
+  min_component_pixels: 96
+  depth_scale_m: 0.001
+  depth_min_m: 0.2
+  depth_max_m: 12.0
+  max_projected_points: 1200
+  visual_examples_per_group: 6
+person_label: 13
+splits:
+  train:
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  validation:
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+    - sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+      calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"

@@ -1,0 +1,25 @@
+output_dir: "outputs/semantic_stability_20260731/experiment3"
+seed: 7
+device: "cuda"
+hidden_dim: 32
+learning_rate: 0.002
+weight_decay: 0.0001
+batch_size: 64
+epochs: 200
+early_stop_patience: 30
+keep_baseline_margin_m: 0.03
+confidence_min: 0.55
+train_sources:
+  - name: "Jun15_CCW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun15_ccw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/train_jun15_ccw_run2_fine.yaml"
+  - name: "Jun15_CW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun15_cw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/train_jun15_cw_run2_fine.yaml"
+val_sources:
+  - name: "Jun23_CCW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun23_ccw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/val_jun23_ccw_run2_fine.yaml"
+  - name: "Jun23_CW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun23_cw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/val_jun23_cw_run2_fine.yaml"

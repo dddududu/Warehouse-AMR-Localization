@@ -1,0 +1,20 @@
+sources:
+  - name: "Jun23_CCW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun23_ccw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/val_jun23_ccw_run2_fine.yaml"
+  - name: "Jun23_CW_Run2"
+    result_json: "outputs/semantic_stability_20260731/experiment3/gate_collection_jun23_cw_run2.json"
+    fine_config: "experiments/semantic_stability_20260731/experiment3_configs/val_jun23_cw_run2_fine.yaml"
+frame_stride: 8
+dynamic_labels: [12, 13, 14, 15]
+window_size: 3
+max_history_pose_jump_m: 1.5
+voxel_size_m: 0.3
+max_iterations: 20
+max_correspondence_distance_m: 0.8
+min_correspondences: 36
+trim_ratio: 0.7
+min_inlier_ratio: 0.55
+max_delta_translation_m: 0.45
+max_delta_yaw_deg: 3.0
+output_json: "outputs/semantic_class_prior_20260808/multiframe_dynamic_only_validation_summary.json"

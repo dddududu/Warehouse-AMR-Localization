@@ -27,6 +27,12 @@ class FineLocalizationConfig:
     use_semantic_dynamic_filter: bool = False
     semantic_dynamic_labels: tuple[int, ...] = (12, 13, 14, 15)
     semantic_dynamic_mask_dilation_px: int = 5
+    use_semidynamic_filter_trigger: bool = False
+    semantic_semi_dynamic_labels: tuple[int, ...] = (5, 7, 9, 10, 11)
+    semantic_semi_dynamic_ratio_threshold: float = 0.10
+    semantic_filter_apply_dynamic_filter_without_trigger: bool = True
+    use_semantic_dual_geometry_gate: bool = False
+    use_semantic_shadow_tracker: bool = False
     semantic_occlusion_labels: tuple[int, ...] = (13,)
     deep_pose_init_semantic_occlusion_ratio_threshold: float | None = None
     semantic_occlusion_predictor_checkpoint_path: str | None = None
@@ -52,6 +58,9 @@ class FineLocalizationConfig:
     deep_pose_confidence_weight: float = 0.10
     use_deep_pose_init_hypothesis: bool = True
     use_tracker_pose_init_hypothesis: bool = False
+    reliability_gate_checkpoint_path: str | None = None
+    reliability_gate_confidence_min: float = 0.55
+    reliability_gate_min_predicted_improvement_m: float = 0.03
     tracker_pose_init_consistency_max_xy_m: float | None = None
     tracker_pose_init_consistency_max_yaw_deg: float | None = None
     tracker_pose_init_min_inlier_ratio: float | None = None
@@ -87,6 +96,11 @@ class FineLocalizationConfig:
     online_stabilizer_temporal_bonus: float = 0.10
     online_stabilizer_fallback_to_tracker: bool = True
     use_online_patch_hysteresis: bool = True
+    use_multi_hypothesis_tracker: bool = False
+    multi_hypothesis_beam_size: int = 3
+    multi_hypothesis_branch_factor: int = 3
+    multi_hypothesis_pose_merge_distance_m: float = 0.75
+    multi_hypothesis_keep_reacquisition_branch: bool = False
     online_patch_switch_margin: float = 0.05
     online_patch_switch_force_prev_deep_prob_max: float | None = None
     online_patch_switch_force_proposed_deep_prob_min: float | None = None
@@ -134,6 +148,10 @@ class FineLocalizationConfig:
         if "semantic_dynamic_labels" in payload:
             payload["semantic_dynamic_labels"] = tuple(
                 int(label) for label in payload["semantic_dynamic_labels"]
+            )
+        if "semantic_semi_dynamic_labels" in payload:
+            payload["semantic_semi_dynamic_labels"] = tuple(
+                int(label) for label in payload["semantic_semi_dynamic_labels"]
             )
         if "semantic_occlusion_labels" in payload:
             payload["semantic_occlusion_labels"] = tuple(

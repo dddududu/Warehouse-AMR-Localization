@@ -1,0 +1,20 @@
+output_dir: "outputs/target_motion_20260803/pretrained_person_detector_highres"
+model:
+  name: "fasterrcnn_resnet50_fpn_v2"
+  weights: "DEFAULT"
+evaluation:
+  frame_stride: 40
+  batch_size: 1
+  num_workers: 1
+  min_component_pixels: 96
+  match_iou_threshold: 0.30
+  confidence_thresholds: [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+  device: "cuda"
+person_label: 13
+splits:
+  validation:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  blind_test:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"

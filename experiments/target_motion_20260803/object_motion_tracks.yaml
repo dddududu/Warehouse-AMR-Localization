@@ -1,0 +1,45 @@
+output_dir: "outputs/target_motion_20260803/tracks"
+analysis:
+  min_component_pixels: 96
+  min_valid_depth_pixels: 24
+  depth_scale_m: 0.001
+  depth_min_m: 0.2
+  depth_max_m: 12.0
+  association_max_distance_m: 1.0
+  association_max_gap_frames: 3
+  future_horizon_sec: 0.5
+  future_horizon_tolerance_sec: 0.25
+  dynamic_speed_threshold_mps: 0.35
+  min_track_observations: 7
+target_classes:
+  - class_id: 13
+    name: "person"
+  - class_id: 9
+    name: "cart_pallet_jack"
+  - class_id: 14
+    name: "forklift_truck"
+sequences:
+  - name: "jun15_aisle_ccw_run2"
+    split: "train"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "jun15_aisle_cw_run2"
+    split: "train"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "jun23_aisle_ccw_run2"
+    split: "validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "jun23_aisle_cw_run2"
+    split: "validation"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "oct12_aisle_ccw"
+    split: "blind_test"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "oct12_aisle_cw"
+    split: "blind_test"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"

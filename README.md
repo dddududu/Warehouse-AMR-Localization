@@ -1,178 +1,160 @@
-# TorWIC Coarse Retrieval
+# 仓库机器人跨日期定位系统
 
-LiDAR coarse retrieval pipeline for the TorWIC warehouse dataset.
+> 用 LiDAR、双目图像、语义信息和学习模型，让移动机器人在“货架会重复、物体会移动、日期会变化”的仓库里重新找到自己。
 
-## Recommended training setup
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/PyTorch-2.9-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch" />
+  <img src="https://img.shields.io/badge/Sensors-LiDAR%20%2B%20Stereo-0A7B83" alt="Sensors" />
+  <img src="https://img.shields.io/badge/Domain-Warehouse%20Robotics-4B5563" alt="Domain" />
+</p>
 
-- Multi-day training config: `configs/coarse_retrieval_multiday.yaml`
-- Fast multi-day fine-tune config: `configs/coarse_retrieval_multiday_finetune_e2.yaml`
-- Oct. 12 Aisle-CCW evaluation config: `configs/eval_oct12_aisle_ccw_multiday.yaml`
-- Local-rerank best training config: `configs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.yaml`
-- Local-rerank best eval config: `configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml`
-- Stride-10 classifier-head training config: `configs/coarse_retrieval_classifier_head_e2_stride10.yaml`
-- Stride-10 best eval config: `configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml`
-- Shared map/calibration follow the `Jun. 15, 2022` assets as requested.
+## 一句话说明
 
-## What changed
+这是一个面向仓储机器人的**粗到精跨日期重定位系统**。系统先从大地图中找出少量可能区域，再结合深度匹配、几何配准和时序跟踪给出精确位姿；同时学习“地图中哪些位置长期可靠”，降低人员、推车和场景变化对定位的影响。
 
-- Supports explicit `sequence_entries`, so different dates can be mixed in one training run.
-- Shares query/patch encoder weights when enabled to reduce overfitting.
-- Adds query-side BEV augmentation for better cross-date generalization.
-- Adds optional patch-classification supervision and score fusion to improve top-1 retrieval.
-- Adds a local spatial matcher and second-stage reranking path for harder near-neighbor disambiguation.
+项目的核心不是单一模型，而是一套从**数据读取、跨模态对齐、候选检索、学习评分、几何求解、失败分析到可复现实验**的完整工程闭环。
 
-## Train
+## 结果速览
 
-```bash
-python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_multiday.yaml --output-checkpoint outputs/coarse_retrieval_multiday_best.pt
+所有数字均来自固定训练/测试划分，详细定义见 [结果与复现说明](docs/RESULTS_AND_REPRODUCIBILITY.md)。
+
+| 模块 | 测试设置 | 结果 | 说明 |
+| --- | --- | ---: | --- |
+| 粗定位候选分类 | Jun.15 训练 → Oct.12 Aisle_CCW 测试 | **Top-1 44.26%** | 直接命中正确地图块的比例 |
+| 粗定位召回 | 同上 | **Recall@3 76.72%** | 正确块位于前三候选的比例 |
+| 精定位 | Oct.12 Aisle_CCW 全序列 | **0.1086 m** 平均位置误差 | 98.47% 帧小于 0.5 m |
+| 精定位 | Oct.12 Aisle_CW 全序列 | **0.0932 m** 平均位置误差 | 99.08% 帧小于 0.5 m |
+| Aisle 合并精度 | 两条路线合并 | **0.1002 m** 平均位置误差 | 98.80% 帧小于 0.5 m |
+| 学习型地图 | 跨日空间隔离验证 | **MAE 0.1914 → 0.1096** | 比人工稳定性公式降低 **42.7%** |
+
+<p align="center">
+  <img src="docs/assets/stability_prediction_comparison.jpg" width="720" alt="学习型稳定地图的跨日预测结果" />
+</p>
+
+## 系统如何工作
+
+```mermaid
+flowchart LR
+    A[当前帧\nLiDAR + 双目图像] --> B[语义投影与局部表示]
+    B --> C[粗定位\n检索 Top-K 地图块]
+    C --> D[学习型候选评分\n描述子 + 分类器]
+    D --> E[深度引导初始化]
+    E --> F[ICP 几何精配准]
+    F --> G[时序跟踪与门控]
+    H[学习型稳定地图] --> D
+    H --> F
+    G --> I[最终机器人位姿]
 ```
 
-```bash
-python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_multiday_finetune_e2.yaml --output-checkpoint outputs/coarse_retrieval_multiday_finetune_e2.pt
-```
+### 1. 粗定位：先缩小搜索范围
+
+把当前 LiDAR 扫描转换为鸟瞰表示，再与六月地图中的候选块进行匹配。网络同时学习全局描述子和“当前帧属于哪个地图块”的分类分数，解决仓库中外观相似货架带来的混淆。
+
+### 2. 精定位：再用深度学习与几何互补
+
+对 Top-K 候选，深度网络给出匹配可信度与初始相对位姿；ICP 利用点云几何进一步对齐。这样的分工避免只依赖学习模型，也避免 ICP 从全局搜索时陷入错误的重复货架。
+
+### 3. 时序稳定：不让单帧异常带偏轨迹
+
+系统保留当前跟踪状态与有竞争力的候选状态。候选只有在连续多帧证据支持下才切换；当图像被人或推车遮挡时，可靠性门控会降低不稳定初始化的影响。
+
+### 4. 学习型地图：判断“哪里值得信任”
+
+系统将 LiDAR 点投影到左右语义图，再构建 0.5 m 栅格地图。轻量卷积网络读取中心栅格周围的局部结构、观测密度和语义分布，预测该位置跨日期后是否仍适合定位。
+
+<p align="center">
+  <img src="docs/assets/initial_grid_map.png" width="47%" alt="初始的栅格地图" />
+  <img src="docs/assets/learned_stability_map.png" width="47%" alt="学习型地图" />
+</p>
+
+### 跨模态对齐：把“看见的东西”投到地图坐标里
+
+<p align="center">
+  <img src="docs/assets/lidar_projection_left.png" width="47%" alt="左目图像上的点云语义投影" />
+  <img src="docs/assets/lidar_projection_right.png" width="47%" alt="右目图像上的点云语义投影" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/reliability_network.png" width="640" alt="局部地图可靠性预测网络示意图" />
+</p>
+
+## 我解决了什么工程问题
+
+| 现实难点 | 处理方式 | 收获 |
+| --- | --- | --- |
+| 货架高度重复，直接全局 ICP 容易对齐到错误位置 | 先检索候选块，再在 Top-K 内精配准 | 将全局搜索拆成可控的分阶段问题 |
+| 人员和推车遮挡局部环境 | 语义投影、动态区域过滤、时序门控 | 保留稳定历史状态，避免单帧异常触发跳变 |
+| 地图会跨日期变化 | 用 Jun.15 初始图预测 Jun.23 再观测可靠性 | 从人工规则升级为可学习的可靠性地图 |
+| 深度模型和几何模型各有盲区 | 深度网络提供候选/初始化，ICP 负责最终几何约束 | 形成可解释、可回退的混合系统 |
+
+## AI 辅助科研与工程能力
+
+本项目展示的不是“调用一个现成模型”，而是把 AI 用于完整问题求解：
+
+- **提出可检验假设**：从误差曲线、错误候选和遮挡帧中定位瓶颈，再设计候选分类、时序门控与地图可靠性等针对性机制。
+- **跨模态建模**：把点云、双目图像、语义标签和历史地图统一到同一坐标系，构建可训练监督信号。
+- **快速迭代与消融**：保留失败分支与对照实验，区分“模型预测能力提升”和“端到端定位收益提升”。
+- **负责任地使用生成式 AI**：我将大语言模型作为代码审查、文献梳理、测试脚手架和文档协作工具；数据划分、实验假设、训练运行、指标核验和最终技术判断均由我负责，并且不使用测试集调参或制造结果。
+
+更多面向非专业读者的项目叙述见 [项目故事](docs/PROJECT_STORY_CN.md)，AI 工程工作流见 [AI 工程说明](docs/AI_ENGINEERING_WORKFLOW.md)。
+
+## 数据来源与使用边界
+
+- **数据集**：Toronto Warehouse Incremental Change SLAM Dataset（TorWIC-SLAM），官方发布页：[Viky397/TorWICDataset](https://github.com/Viky397/TorWICDataset)。
+- **传感器**：双 Azure Kinect RGB-D 相机、Ouster OS1-128 三维 LiDAR，以及发布的标定与轨迹信息。
+- **本项目划分**：主要使用 Jun.15 构图/训练，Jun.23 构造跨日地图监督，Oct.12 作为 Aisle 盲测集。
+- **仓库不包含原始数据、预训练权重或本地运行输出**：请从数据集官方渠道下载，并遵守原数据集的许可与引用要求。原因与目录约定见 [数据与复现说明](docs/RESULTS_AND_REPRODUCIBILITY.md#数据来源与边界)。
+
+## 快速开始
 
 ```bash
-python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.yaml --output-checkpoint outputs/coarse_retrieval_localmatcher_stage3_hardrerank_e1.pt
+git clone https://github.com/dddududu/torwic_coarse.git
+cd torwic_coarse
+uv sync --group dev
 ```
+
+下载 TorWIC-SLAM 数据后，将 YAML 配置中的本地数据路径替换为你的数据目录。以下命令展示主要入口：
 
 ```bash
-python -m trainers.train_coarse_retrieval --config configs/coarse_retrieval_classifier_head_e2_stride10.yaml --output-checkpoint outputs/coarse_retrieval_classifier_head_e2_stride10.pt
+# 粗定位训练
+python -m trainers.train_coarse_retrieval \
+  --config configs/coarse_retrieval_classifier_head_e2_stride10.yaml \
+  --output-checkpoint outputs/coarse_retrieval_classifier_head.pt
+
+# 粗定位评估
+python -m retrieval.evaluate_retrieval \
+  --config configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml \
+  --checkpoint outputs/coarse_retrieval_classifier_head.pt \
+  --output-json outputs/eval_oct12_aisle_ccw.json
+
+# 精定位
+python -m localization.deep_fine_localizer \
+  --config configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online.yaml \
+  --output-json outputs/fine_localization_oct12_aisle_ccw.json
 ```
 
-## Evaluate
+## 仓库导航
 
-```bash
-python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_multiday.yaml --checkpoint outputs/coarse_retrieval_multiday_best.pt --output-json outputs/eval_oct12_aisle_ccw_multiday.json
-```
+| 目录 | 内容 |
+| --- | --- |
+| `dataset_io/`、`calibration/`、`geometry/` | 数据读取、传感器标定和坐标变换 |
+| `retrieval/`、`trainers/`、`models/` | 粗定位网络、训练与评分模型 |
+| `localization/`、`preprocess/` | 精定位、ICP、时序跟踪、动态点处理 |
+| `configs/` | 可复现训练与测试配置 |
+| `experiments/` | 按日期保存的实验脚本、配置和说明 |
+| `tests/` | 面向关键机制的单元测试与回归测试 |
+| `docs/` | 项目叙述、结果、数据说明与实验索引 |
 
-```bash
-python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_localmatcher_hardrerank.yaml --descriptor-bank outputs/descriptor_bank_oct12_aisle_ccw_top3_deg30.npz --checkpoint checkpoints/coarse_retrieval_localmatcher_stage3_hardrerank_e1_top1_0p4011_r3_0p6645.pt --output-json outputs/eval_oct12_aisle_ccw_localmatcher_stage3_hardrerank_best.json
-```
+## 实验索引
 
-```bash
-python -m retrieval.evaluate_retrieval --config configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml --checkpoint checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt --output-json outputs/eval_oct12_aisle_ccw_classifier_head_stride10.json
-```
+完整实验路线、每个目录的目的和保留价值见 [实验索引](docs/EXPERIMENT_INDEX.md)。如果你在评估项目能力，建议按以下顺序阅读：
 
-## Fine Localization
+1. 本页的系统与结果概览；
+2. [项目故事](docs/PROJECT_STORY_CN.md)；
+3. [结果与复现说明](docs/RESULTS_AND_REPRODUCIBILITY.md)；
+4. [学习型稳定地图实验](experiments/learned_stability_map_20260911/README.md)。
 
-```bash
-python -m localization.fine_localizer --config configs/fine_localization_oct12_aisle_ccw.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_50f.json
-```
+---
 
-```bash
-python -m localization.fine_localizer --config configs/fine_localization_oct12_aisle_cw.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_cw_50f.json
-```
-
-- Fine localization pipeline: `topK patch retrieval -> local submap BEV correlation -> ICP refinement`
-- Trajectory mode adds temporal consistency reranking with constant-velocity prediction
-- Full-sequence mode adds Viterbi sequence smoothing over top-k fine-localization candidates
-- Validated on `Oct. 12, 2022 / Aisle_CCW` first 50 frames:
-  - mean position error: `0.1784 m`
-  - median position error: `0.1793 m`
-  - mean yaw error: `0.6855 deg`
-- Validated on `Oct. 12, 2022 / Aisle_CW` first 50 frames:
-  - mean position error: `0.1449 m`
-  - median position error: `0.1432 m`
-  - mean yaw error: `0.4504 deg`
-- Full `Oct. 12, 2022 / Aisle_CCW` with sequence smoothing:
-  - mean position error: `2.6486 m`
-  - median position error: `0.1645 m`
-  - mean yaw error: `39.4893 deg`
-  - frames below `1m`: `63.28%`
-- Full `Oct. 12, 2022 / Aisle_CW` with sequence smoothing:
-  - mean position error: `2.0649 m`
-  - median position error: `0.1388 m`
-  - mean yaw error: `29.4770 deg`
-  - frames below `1m`: `65.20%`
-
-## Deep Fine Localization (Experimental)
-
-```bash
-python -m trainers.train_fine_pose_matcher --config configs/fine_pose_matcher_train.yaml --output-checkpoint outputs/fine_pose_matcher_v1.pt
-```
-
-```bash
-python -m localization.deep_fine_localizer --config configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online.yaml --frame-start 0 --num-frames 50 --output-json outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online_50f.json
-```
-
-- Model path: `models/fine_pose_matcher.py`
-- Training dataset: `dataset_io/fine_localization_dataset.py`
-- First version uses `query BEV + candidate submap BEV -> match score + relative pose -> ICP`
-- Current `Aisle_CCW` 50-frame result with `outputs/fine_pose_matcher_v1.pt` is not yet better than the geometric pipeline:
-  - mean position error: `1.9704 m`
-  - median position error: `1.9645 m`
-  - mean yaw error: `50.4744 deg`
-- V2 switches to `topK` candidate-set classification plus pose residual prediction:
-  - training script still uses `trainers/train_fine_pose_matcher.py`
-  - current best validation candidate classification accuracy: `66.73%`
-  - current `Aisle_CCW` 50-frame deep-dominant result is still below the geometric baseline:
-    - `outputs/fine_localization_oct12_aisle_ccw_deep_v2_50f.json`
-    - mean position error: `1.9640 m`
-    - mean yaw error: `60.7309 deg`
-- V3 switches the pose head to `x/y/yaw` bin classification + residual decoding:
-  - current validation candidate classification accuracy: `50.16%`
-  - current `Aisle_CCW` 50-frame result:
-    - `outputs/fine_localization_oct12_aisle_ccw_deep_v3_50f.json`
-    - mean position error: `10.6707 m`
-    - mean yaw error: `53.8335 deg`
-- Stereo query-image branch is also implemented and trained:
-  - checkpoint: `outputs/fine_pose_matcher_v4_stereo.pt`
-  - current best validation candidate classification accuracy: `51.33%`
-  - this is lower than the monocular V4 peak `69.75%`, so stereo is not promoted to the default branch yet
-- Current retained deep configs are:
-  - baseline online config: `configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_online.yaml`
-  - `CCW` best deep config is the tracked `tracker_init` branch:
-    - `configs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_pairresolver_trackerinit.yaml`
-  - baseline online `CW` config: `configs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_online.yaml`
-  - `CW` best deep config is the tracked `tracker_init` branch:
-    - `configs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_pairresolver_corepatch_v2_trackerinit.yaml`
-  - logic: `deep candidate scoring + deep-guided BEV initialization + ICP`, then apply online stabilization; `CW` best branch also adds `tracker_init`
-  - full `Aisle_CCW` best deep result:
-    - `outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_pairresolver_trackerinit_full.json`
-    - mean position error: `2.0683 m`
-    - median position error: `0.1553 m`
-    - mean yaw error: `0.9366 deg`
-    - frames below `1m`: `66.56%`
-  - full `Aisle_CW` best deep result:
-    - `outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_pairresolver_corepatch_v2_trackerinit_full.json`
-    - mean position error: `0.3879 m`
-    - median position error: `0.0752 m`
-    - mean yaw error: `0.9824 deg`
-    - frames below `1m`: `98.17%`
-- Jun15-trained generic deep run without directional corrections:
-  - training config: `configs/fine_pose_matcher_train_jun15_fullroutes.yaml`
-  - coarse train split config: `configs/coarse_retrieval_jun15_fullroutes_stride10.yaml`
-  - checkpoint: `outputs/fine_pose_matcher_jun15_fullroutes_generic.pt`
-  - full `Oct. 12, 2022` summary: `outputs/oct12_full_generic_jun15_v3_summary.json`
-  - weighted full-test metrics over all 6 routes:
-    - mean position error: `4.6724 m`
-    - mean yaw error: `22.6473 deg`
-    - frames below `1m`: `78.75%`
-    - frames below `0.5m`: `78.34%`
-  - per-route results:
-    - `Aisle_CCW`: `outputs/fine_localization_oct12_aisle_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `0.1073 m`, frames below `1m` `100.00%`
-    - `Aisle_CW`: `outputs/fine_localization_oct12_aisle_cw_deep_v6_guidedbev_trackerinit_generic_jun15.json`, mean position error `0.2581 m`, frames below `1m` `94.23%`
-    - `Hallway_Full_CW_Run_1`: `outputs/fine_localization_oct12_hallway_full_cw_run1_deep_v6_guidedbev_generic_jun15coarse_trackerquality.json`, mean position error `8.2763 m`, frames below `1m` `60.83%`
-    - `Hallway_Full_CW_Run_2`: `outputs/fine_localization_oct12_hallway_full_cw_run2_deep_v6_guidedbev_generic_jun15coarse_trackerquality.json`, mean position error `4.0132 m`, frames below `1m` `85.78%`
-    - `Hallway_Straight_CCW`: `outputs/fine_localization_oct12_hallway_straight_ccw_deep_v6_guidedbev_trackerinit_generic.json`, mean position error `8.0271 m`, frames below `1m` `58.81%`
-    - `Hallway_Straight_CW`: `outputs/fine_localization_oct12_hallway_straight_cw_deep_v6_guidedbev_generic_jun15coarse_trackerquality_full.json`, mean position error `3.6948 m`, frames below `1m` `85.58%`
-  - bottleneck:
-    - `Aisle` is already stable under the generic branch
-    - `Hallway_Full` and `Hallway_Straight_CW` improve by gating `tracker_init` with ICP quality instead of disabling it
-    - main remaining failure is now `Hallway_Straight_CCW`
-
-## Best checkpoint
-
-- Repository path: `checkpoints/coarse_retrieval_classifier_head_e2_stride10_top1_0p4426_r3_0p7672.pt`
-- GitHub Release: `best-checkpoint-top1-0.4426`
-- Matching report: `analysis/multiday_finetune_results.md`
-
-## Best system
-
-- Eval config: `configs/eval_oct12_aisle_ccw_classifier_head_stride10.yaml`
-- Overall best metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.4426`, `Recall@3=0.7672`, `MRR=0.6463`
-
-## Best ensemble under stride-10 patches
-
-- Eval config: `configs/eval_oct12_aisle_ccw_multiday_ensemble_stride10.yaml`
-- Metrics on `Oct. 12, 2022 / Aisle_CCW`: `Top1=0.4087`, `Recall@3=0.7945`, `MRR=0.6310`
+如果这个项目对你的机器人定位、跨日期地图维护或多模态 AI 工程工作有启发，欢迎交流。

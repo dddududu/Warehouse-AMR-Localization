@@ -1,0 +1,19 @@
+stability_map_path: "outputs/semantic_stability_20260731/experiment1/semantic_stability_map.npz"
+output_dir: "outputs/semantic_stability_20260731/experiment2"
+calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+cell_size_m: 0.5
+semantic_score_weight: 0.20
+crop:
+  x_min: -10.0
+  x_max: 10.0
+  y_min: -10.0
+  y_max: 10.0
+  z_min: 0.13
+  z_max: 4.73
+sequences:
+  - name: "Aisle_CCW"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_ccw_generic_v14a_samepatchrelease_full.json"
+  - name: "Aisle_CW"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"
+    result_json: "outputs/aisle_generic_20260521/fine_localization_oct12_aisle_cw_generic_v14a_samepatchrelease_full.json"

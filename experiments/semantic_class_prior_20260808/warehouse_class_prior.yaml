@@ -1,0 +1,11 @@
+groups:
+  structural_static: [1, 4, 6, 8]
+  support_surface: [1]
+  semi_dynamic: [5, 7, 9, 10, 11]
+  dynamic: [12, 13, 14, 15]
+  excluded: [0, 2, 3]
+policy:
+  description: >-
+    墙体、货架和固定机械是长期地图的结构锚点；地面只作为辅助支撑面；
+    杂项静态物、货物、推车、路锥和文字区域只保留短期语义证据；
+    人员、叉车及其他动态物体永不写入长期层；背景、天花板和自车不参与更新。

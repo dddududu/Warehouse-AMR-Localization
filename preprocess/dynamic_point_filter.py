@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -9,6 +10,13 @@ import numpy as np
 from calibration.calibration_parser import Calibration
 from calibration.camera_model import CameraModel
 from geometry.se3 import transform_points
+
+
+@dataclass(frozen=True)
+class SemanticFilterDecision:
+    semi_dynamic_point_ratio: float
+    filtered_labels: tuple[int, ...]
+    use_conservative_filter: bool
 
 
 def _load_dynamic_mask(
@@ -106,3 +114,45 @@ def filter_dynamic_points_by_semantics(
     )
     dynamic = dynamic_left | dynamic_right
     return points[~dynamic].astype(np.float32, copy=False), dynamic
+
+
+def filter_points_with_semidynamic_trigger(
+    points_sensor: np.ndarray,
+    calibration: Calibration,
+    segmentation_left_path: str | Path | None,
+    segmentation_right_path: str | Path | None,
+    dynamic_labels: Iterable[int] = (12, 13, 14, 15),
+    semi_dynamic_labels: Iterable[int] = (5, 7, 9, 10, 11),
+    semi_dynamic_ratio_threshold: float = 0.10,
+    dilation_px: int = 5,
+) -> tuple[np.ndarray, SemanticFilterDecision]:
+    """Filter dynamic points and conservatively remove semi-dynamic points when needed."""
+    points = np.asarray(points_sensor, dtype=np.float32)
+    dynamic = tuple(int(label) for label in dynamic_labels)
+    semi_dynamic = tuple(int(label) for label in semi_dynamic_labels)
+    _, semi_dynamic_mask = filter_dynamic_points_by_semantics(
+        points,
+        calibration=calibration,
+        segmentation_left_path=segmentation_left_path,
+        segmentation_right_path=segmentation_right_path,
+        dynamic_labels=semi_dynamic,
+        dilation_px=dilation_px,
+    )
+    semi_dynamic_ratio = float(np.mean(semi_dynamic_mask)) if semi_dynamic_mask.size else 0.0
+    use_conservative_filter = semi_dynamic_ratio >= float(semi_dynamic_ratio_threshold)
+    labels_to_filter = dynamic + tuple(label for label in semi_dynamic if label not in dynamic)
+    if not use_conservative_filter:
+        labels_to_filter = dynamic
+    filtered_points, _ = filter_dynamic_points_by_semantics(
+        points,
+        calibration=calibration,
+        segmentation_left_path=segmentation_left_path,
+        segmentation_right_path=segmentation_right_path,
+        dynamic_labels=labels_to_filter,
+        dilation_px=dilation_px,
+    )
+    return filtered_points, SemanticFilterDecision(
+        semi_dynamic_point_ratio=semi_dynamic_ratio,
+        filtered_labels=labels_to_filter,
+        use_conservative_filter=use_conservative_filter,
+    )

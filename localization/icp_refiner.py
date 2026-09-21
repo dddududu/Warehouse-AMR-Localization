@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 
 from geometry.se3 import compose_transform, transform_points
 
@@ -81,6 +82,7 @@ def refine_pose_with_icp(
     max_iterations: int = 20,
     max_correspondence_distance_m: float = 1.0,
     min_correspondences: int = 24,
+    nearest_neighbor_backend: str = "flann",
 ) -> ICPResult:
     query_down = voxel_downsample(query_points_xyz_sensor, voxel_size_m)
     map_down = voxel_downsample(map_points_xyz_world, voxel_size_m)
@@ -99,20 +101,34 @@ def refine_pose_with_icp(
     best_num_inliers = 0
     best_rmse = float("inf")
     converged = False
-    flann_index = cv2.flann_Index(
-        np.asarray(map_down, dtype=np.float32),
-        {"algorithm": 1, "trees": 4},
-    )
+    if nearest_neighbor_backend == "flann":
+        nearest_index = cv2.flann_Index(
+            np.asarray(map_down, dtype=np.float32),
+            {"algorithm": 1, "trees": 4},
+        )
+    elif nearest_neighbor_backend == "ckdtree":
+        nearest_index = cKDTree(np.asarray(map_down, dtype=np.float64))
+    else:
+        raise ValueError(f"Unsupported nearest-neighbor backend: {nearest_neighbor_backend}.")
 
     for iteration_idx in range(max(1, int(max_iterations))):
         transformed_query = transform_points(pose, query_down).astype(np.float64)
-        nearest_indices, nearest_sq = flann_index.knnSearch(
-            np.asarray(transformed_query, dtype=np.float32),
-            1,
-            params={},
-        )
-        nearest_sq = nearest_sq.reshape(-1).astype(np.float64)
-        nearest_indices = nearest_indices.reshape(-1).astype(np.int64)
+        if nearest_neighbor_backend == "flann":
+            nearest_indices, nearest_sq = nearest_index.knnSearch(
+                np.asarray(transformed_query, dtype=np.float32),
+                1,
+                params={},
+            )
+            nearest_sq = nearest_sq.reshape(-1).astype(np.float64)
+            nearest_indices = nearest_indices.reshape(-1).astype(np.int64)
+        else:
+            nearest_distances, nearest_indices = nearest_index.query(
+                transformed_query,
+                k=1,
+                workers=1,
+            )
+            nearest_sq = np.square(nearest_distances, dtype=np.float64)
+            nearest_indices = np.asarray(nearest_indices, dtype=np.int64)
         inlier_mask = nearest_sq <= max_corr_sq
         num_inliers = int(np.count_nonzero(inlier_mask))
         if num_inliers < int(min_correspondences):

@@ -107,7 +107,14 @@ def analyze_map(map_path: str | Path, cache_dir: str | Path | None = None, outpu
     return report
 
 
-xyz, normals = load_map_vertices("D:\TorWIC\TorWIC SLAM Dataset\Jun. 15, 2022\Aisle_CCW_Run_1\Aisle_CCW_Run_1\groundtruth_map.ply")
-if normals is not None:
-    print("法向量均值:", np.mean(normals, axis=0))
-    print("法向量模长均值:", np.linalg.norm(normals, axis=1).mean())
+def main() -> None:
+    parser = argparse.ArgumentParser(description="分析 PLY 地图的点云范围和法向量信息。")
+    parser.add_argument("map_path", type=Path, help="待分析的 PLY 地图路径。")
+    parser.add_argument("--cache-dir", type=Path, default=None, help="可选的解析缓存目录。")
+    parser.add_argument("--output-json", type=Path, default=None, help="可选的 JSON 报告输出路径。")
+    args = parser.parse_args()
+    analyze_map(args.map_path, cache_dir=args.cache_dir, output_json=args.output_json)
+
+
+if __name__ == "__main__":
+    main()

@@ -19,12 +19,19 @@ from geometry.yaw_utils import wrap_to_pi, yaw_from_pose_matrix
 from localization.bev_matcher import match_query_points_to_submap_bev
 from localization.fine_localizer import FineLocalizer
 from localization.icp_refiner import pose_from_xy_yaw_z, refine_pose_with_icp
+from localization.multi_hypothesis_tracker import MultiHypothesisState, select_diverse_hypotheses
 from localization.submap_builder import build_local_submap
 from models.candidate_reranker import CandidateReranker
 from models.confusion_pair_resolver import ConfusionPairResolver
 from models.fine_pose_matcher import FinePoseMatcher
 from models.occlusion_predictor import StereoOcclusionPredictor
+from models.reliability_gate import (
+    RELIABILITY_GATE_SOURCES,
+    ReliabilityGate,
+    build_reliability_gate_features,
+)
 from preprocess.bev_builder import points_to_bev
+from preprocess.dynamic_point_filter import semantic_label_ratio
 
 
 class DeepFineLocalizer(FineLocalizer):
@@ -34,6 +41,7 @@ class DeepFineLocalizer(FineLocalizer):
             raise ValueError("deep_matcher_checkpoint_path must be set.")
         checkpoint = torch.load(self.config.deep_matcher_checkpoint_path, map_location=self.device)
         checkpoint_config = checkpoint.get("config", {})
+        self.zero_query_bev = bool(checkpoint_config.get("zero_query_bev", False))
         self.deep_model = FinePoseMatcher(
             descriptor_dim=int(checkpoint_config.get("descriptor_dim", 128)),
             hidden_dim=int(checkpoint_config.get("hidden_dim", 128)),
@@ -47,6 +55,33 @@ class DeepFineLocalizer(FineLocalizer):
         ).to(self.device)
         self.deep_model.load_state_dict(checkpoint["model"], strict=True)
         self.deep_model.eval()
+        self.reliability_gate = None
+        self.reliability_gate_feature_mean = None
+        self.reliability_gate_feature_std = None
+        self.reliability_gate_objective = "classification"
+        self._reliability_gate_semantic_feature_cache: dict[int, np.ndarray] = {}
+        if self.config.reliability_gate_checkpoint_path:
+            gate_checkpoint = torch.load(
+                self.config.reliability_gate_checkpoint_path,
+                map_location=self.device,
+            )
+            gate_config = gate_checkpoint.get("config", {})
+            self.reliability_gate_objective = str(gate_config.get("objective", "classification"))
+            feature_dim = int(gate_config.get("feature_dim", 16))
+            self.reliability_gate = ReliabilityGate(
+                feature_dim=feature_dim,
+                hidden_dim=int(gate_config.get("hidden_dim", 32)),
+            ).to(self.device)
+            self.reliability_gate.load_state_dict(gate_checkpoint["model"], strict=True)
+            self.reliability_gate.eval()
+            self.reliability_gate_feature_mean = np.asarray(
+                gate_checkpoint["feature_mean"],
+                dtype=np.float32,
+            )
+            self.reliability_gate_feature_std = np.asarray(
+                gate_checkpoint["feature_std"],
+                dtype=np.float32,
+            )
         self.candidate_reranker = None
         if self.config.candidate_reranker_checkpoint_path:
             reranker_checkpoint = torch.load(self.config.candidate_reranker_checkpoint_path, map_location=self.device)
@@ -125,6 +160,41 @@ class DeepFineLocalizer(FineLocalizer):
             and np.isfinite(icp_result.rmse)
         )
 
+    @staticmethod
+    def _merge_semantic_geometry_hypotheses(
+        filtered_candidates: list[dict[str, object]],
+        raw_candidates: list[dict[str, object]],
+    ) -> tuple[list[dict[str, object]], int]:
+        raw_by_patch = {int(candidate["patch_id"]): candidate for candidate in raw_candidates}
+        merged: list[dict[str, object]] = []
+        accepted_count = 0
+        for filtered_candidate in filtered_candidates:
+            raw_candidate = raw_by_patch.get(int(filtered_candidate["patch_id"]))
+            if raw_candidate is None:
+                filtered_candidate["semantic_filter_geometry_accepted"] = True
+                merged.append(filtered_candidate)
+                accepted_count += 1
+                continue
+            filtered_valid = bool(filtered_candidate["icp_valid"])
+            raw_valid = bool(raw_candidate["icp_valid"])
+            use_filtered = filtered_valid and (
+                not raw_valid
+                or (
+                    float(filtered_candidate["icp_inlier_ratio"])
+                    >= float(raw_candidate["icp_inlier_ratio"])
+                    and float(filtered_candidate["icp_rmse"])
+                    <= float(raw_candidate["icp_rmse"])
+                )
+            )
+            if use_filtered:
+                filtered_candidate["semantic_filter_geometry_accepted"] = True
+                merged.append(filtered_candidate)
+                accepted_count += 1
+            else:
+                raw_candidate["semantic_filter_geometry_accepted"] = False
+                merged.append(raw_candidate)
+        return merged, accepted_count
+
     def _predict_semantic_occlusion_ratio_from_images(self, frame_idx: int) -> float | None:
         if self.occlusion_predictor is None:
             return None
@@ -146,6 +216,70 @@ class DeepFineLocalizer(FineLocalizer):
         with torch.no_grad():
             output = self.occlusion_predictor(stereo_image)
         return float(output["ratio"][0].detach().cpu().item())
+
+    def _semantic_sidecar_refine_raw_winner(
+        self,
+        frame_idx: int,
+        raw_frame_result: dict[str, object],
+    ) -> object | None:
+        selected_idx = int(raw_frame_result["selected_candidate_index"])
+        raw_candidate = raw_frame_result["candidate_results"][selected_idx]
+        if not bool(raw_candidate.get("icp_valid", False)):
+            return None
+        patch_id = int(raw_candidate["patch_id"])
+        submap = build_local_submap(
+            self.map_xyz,
+            center_xy=self.patch_metadata[patch_id].center_xy,
+            size_m=self.config.local_submap_size_m,
+            resolution=self.config.local_submap_resolution,
+        )
+        filtered_points = self._build_query_points(frame_idx)
+        refinement = refine_pose_with_icp(
+            query_points_xyz_sensor=filtered_points,
+            map_points_xyz_world=submap.points_xyz_world,
+            initial_pose_4x4=np.asarray(raw_candidate["final_pose_4x4"], dtype=np.float64),
+            voxel_size_m=self.config.voxel_size_m,
+            max_iterations=self.config.icp_max_iterations,
+            max_correspondence_distance_m=self.config.icp_max_correspondence_distance_m,
+            min_correspondences=self.config.icp_min_correspondences,
+            nearest_neighbor_backend="ckdtree",
+        )
+        if not self._is_valid_icp(refinement):
+            return None
+        if (
+            float(refinement.inlier_ratio) < float(raw_candidate["icp_inlier_ratio"])
+            or float(refinement.rmse) > float(raw_candidate["icp_rmse"])
+        ):
+            return None
+        return refinement
+
+    def _reliability_gate_semantic_features(self, frame_idx: int) -> np.ndarray:
+        cached = self._reliability_gate_semantic_feature_cache.get(int(frame_idx))
+        if cached is not None:
+            return cached
+        record = self.sequence_dataset.frame_index[int(frame_idx)]
+        features = np.asarray(
+            [
+                semantic_label_ratio(
+                    record.segmentation_greyscale_left_path,
+                    record.segmentation_greyscale_right_path,
+                    (13,),
+                ),
+                semantic_label_ratio(
+                    record.segmentation_greyscale_left_path,
+                    record.segmentation_greyscale_right_path,
+                    (12, 13, 14, 15),
+                ),
+                semantic_label_ratio(
+                    record.segmentation_greyscale_left_path,
+                    record.segmentation_greyscale_right_path,
+                    (5, 7, 9, 10, 11),
+                ),
+            ],
+            dtype=np.float32,
+        )
+        self._reliability_gate_semantic_feature_cache[int(frame_idx)] = features
+        return features
 
     def _tracker_pose_hypothesis_is_consistent(
         self,
@@ -391,6 +525,8 @@ class DeepFineLocalizer(FineLocalizer):
         candidate_centers_xy: np.ndarray,
     ) -> dict[str, np.ndarray]:
         query_bev = points_to_bev(query_points, self.query_bev_config)
+        if self.zero_query_bev:
+            query_bev = np.zeros_like(query_bev, dtype=np.float32)
         query_image_tensor = None
         query_image_right_tensor = None
         query_depth_tensor = None
@@ -463,6 +599,7 @@ class DeepFineLocalizer(FineLocalizer):
         previous_selected_patch_id: int | None = None,
         previous_selected_patch_deep_prob: float | None = None,
         previous_selected_init_source: str | None = None,
+        apply_semantic_filter: bool = True,
     ) -> tuple[list[dict[str, object]], dict[str, np.ndarray]]:
         self._active_frame_idx = int(frame_idx)
         self._active_semantic_occlusion_ratio_source = "disabled"
@@ -475,7 +612,19 @@ class DeepFineLocalizer(FineLocalizer):
             else:
                 self._active_semantic_occlusion_ratio = self._semantic_occlusion_ratio(frame_idx)
                 self._active_semantic_occlusion_ratio_source = "semantic_label"
-        query_points = self._build_query_points(frame_idx)
+        semantic_gate_features = (
+            self._reliability_gate_semantic_features(frame_idx)
+            if self.reliability_gate is not None
+            else np.zeros(3, dtype=np.float32)
+        )
+        query_points = self._build_query_points(
+            frame_idx,
+            apply_semantic_filter=apply_semantic_filter,
+        )
+        query_points_for_deep_model = self._build_query_points(
+            frame_idx,
+            apply_semantic_filter=False,
+        )
         candidates = self._retrieve_topk_candidates(frame_idx)
         candidate_bevs = []
         candidate_centers_xy = []
@@ -492,7 +641,7 @@ class DeepFineLocalizer(FineLocalizer):
             candidate_bevs.append(np.asarray(submap.bev, dtype=np.float32))
             candidate_centers_xy.append(np.asarray(patch_meta.center_xy, dtype=np.float32))
         deep_prediction = self._predict_candidate_pose(
-            query_points,
+            query_points_for_deep_model,
             np.stack(candidate_bevs, axis=0).astype(np.float32, copy=False),
             np.stack(candidate_centers_xy, axis=0).astype(np.float32, copy=False),
         )
@@ -619,6 +768,125 @@ class DeepFineLocalizer(FineLocalizer):
                 ),
                 previous_selected_init_source=previous_selected_init_source,
             )
+            tracker_hypothesis_available = bool(
+                predicted_pose_4x4 is not None
+                and tracker_icp_result is not None
+                and self._tracker_pose_hypothesis_passes_quality_gate(tracker_icp_result)
+                and self._tracker_pose_hypothesis_is_consistent(
+                    tracker_icp_result,
+                    [bev_icp_result, deep_icp_result],
+                )
+            )
+            hypothesis_results = {
+                "bev_init": bev_icp_result,
+                "deep_init": deep_icp_result,
+                "tracker_init": tracker_icp_result if tracker_hypothesis_available else None,
+            }
+            hypothesis_temporal_scores = {
+                source: self._temporal_score(result.pose_4x4, predicted_pose_4x4)
+                if result is not None
+                else None
+                for source, result in hypothesis_results.items()
+            }
+            gate_features = build_reliability_gate_features(
+                deep_match_probability=float(deep_prediction["match_probability"][candidate_idx]),
+                deep_pose_confidence=float(deep_prediction["pose_confidence"][candidate_idx]),
+                bev_match_score=float(bev_match.score),
+                deep_bev_match_score=(
+                    float(deep_guided_bev_match.score)
+                    if deep_guided_bev_match is not None
+                    else None
+                ),
+                bev_inlier_ratio=float(bev_icp_result.inlier_ratio),
+                deep_inlier_ratio=(
+                    float(deep_icp_result.inlier_ratio) if deep_icp_result is not None else None
+                ),
+                tracker_inlier_ratio=(
+                    float(tracker_icp_result.inlier_ratio)
+                    if tracker_icp_result is not None
+                    else None
+                ),
+                bev_rmse=float(bev_icp_result.rmse),
+                deep_rmse=float(deep_icp_result.rmse) if deep_icp_result is not None else None,
+                tracker_rmse=(
+                    float(tracker_icp_result.rmse)
+                    if tracker_icp_result is not None
+                    else None
+                ),
+                bev_temporal_score=float(hypothesis_temporal_scores["bev_init"]),
+                deep_temporal_score=hypothesis_temporal_scores["deep_init"],
+                tracker_temporal_score=hypothesis_temporal_scores["tracker_init"],
+                deep_available=deep_icp_result is not None,
+                tracker_available=tracker_hypothesis_available,
+                person_ratio=float(semantic_gate_features[0]),
+                dynamic_ratio=float(semantic_gate_features[1]),
+                movable_ratio=float(semantic_gate_features[2]),
+            )
+            reliability_gate_probabilities = None
+            reliability_gate_source_risks_m = None
+            reliability_gate_selected_source = None
+            reliability_gate_predicted_improvement_m = None
+            reliability_gate_applied = False
+            if self.reliability_gate is not None:
+                standardized_gate_features = (
+                    gate_features - self.reliability_gate_feature_mean
+                ) / np.maximum(self.reliability_gate_feature_std, 1.0e-6)
+                with torch.no_grad():
+                    gate_logits = self.reliability_gate(
+                        torch.from_numpy(standardized_gate_features[None]).to(self.device).float()
+                    )
+                available_source_indices = [
+                    source_idx
+                    for source_idx, source in enumerate(RELIABILITY_GATE_SOURCES)
+                    if hypothesis_results[source] is not None
+                ]
+                if self.reliability_gate_objective == "risk_regression":
+                    reliability_gate_source_risks_m = np.maximum(
+                        np.expm1(gate_logits[0].detach().cpu().numpy().astype(np.float64)),
+                        0.0,
+                    )
+                    selected_gate_idx = min(
+                        available_source_indices,
+                        key=lambda source_idx: float(reliability_gate_source_risks_m[source_idx]),
+                    )
+                    gate_source = RELIABILITY_GATE_SOURCES[selected_gate_idx]
+                    baseline_source = (
+                        "tracker_init"
+                        if selected_init_source == "deep_score_tracker_pose"
+                        else selected_init_source
+                    )
+                    baseline_idx = RELIABILITY_GATE_SOURCES.index(baseline_source)
+                    reliability_gate_predicted_improvement_m = float(
+                        reliability_gate_source_risks_m[baseline_idx]
+                        - reliability_gate_source_risks_m[selected_gate_idx]
+                    )
+                    reliability_gate_selected_source = gate_source
+                    if (
+                        gate_source != baseline_source
+                        and reliability_gate_predicted_improvement_m
+                        >= float(self.config.reliability_gate_min_predicted_improvement_m)
+                    ):
+                        selected_init_source = gate_source
+                        icp_result = hypothesis_results[gate_source]
+                        temporal_score = float(hypothesis_temporal_scores[gate_source])
+                        reliability_gate_applied = True
+                else:
+                    reliability_gate_probabilities = (
+                        torch.softmax(gate_logits, dim=1)[0].detach().cpu().numpy().astype(np.float64)
+                    )
+                    selected_gate_idx = max(
+                        available_source_indices,
+                        key=lambda source_idx: float(reliability_gate_probabilities[source_idx]),
+                    )
+                    gate_source = RELIABILITY_GATE_SOURCES[selected_gate_idx]
+                    reliability_gate_selected_source = gate_source
+                    if float(reliability_gate_probabilities[selected_gate_idx]) >= float(
+                        self.config.reliability_gate_confidence_min
+                    ):
+                        selected_init_source = gate_source
+                        icp_result = hypothesis_results[gate_source]
+                        temporal_score = float(hypothesis_temporal_scores[gate_source])
+                        reliability_gate_applied = True
             candidate_pose = np.asarray(icp_result.pose_4x4, dtype=np.float64)
             temporal_position_jump_m, temporal_yaw_jump_deg = self._temporal_jump_metrics(
                 candidate_pose,
@@ -657,10 +925,13 @@ class DeepFineLocalizer(FineLocalizer):
                 "deep_guided_bev_score": float(deep_guided_bev_match.score) if deep_guided_bev_match is not None else None,
                 "bev_init_icp_inlier_ratio": float(bev_icp_result.inlier_ratio),
                 "bev_init_icp_rmse": float(bev_icp_result.rmse),
+                "bev_init_pose_4x4": bev_icp_result.pose_4x4.tolist(),
                 "deep_init_icp_inlier_ratio": float(deep_icp_result.inlier_ratio) if deep_icp_result is not None else None,
                 "deep_init_icp_rmse": float(deep_icp_result.rmse) if deep_icp_result is not None else None,
+                "deep_init_pose_4x4": deep_icp_result.pose_4x4.tolist() if deep_icp_result is not None else None,
                 "tracker_init_icp_inlier_ratio": float(tracker_icp_result.inlier_ratio) if tracker_icp_result is not None else None,
                 "tracker_init_icp_rmse": float(tracker_icp_result.rmse) if tracker_icp_result is not None else None,
+                "tracker_init_pose_4x4": tracker_icp_result.pose_4x4.tolist() if tracker_icp_result is not None else None,
                 "icp_inlier_ratio": float(icp_result.inlier_ratio),
                 "icp_rmse": float(icp_result.rmse),
                 "icp_valid": self._is_valid_icp(icp_result),
@@ -668,6 +939,23 @@ class DeepFineLocalizer(FineLocalizer):
                 "temporal_yaw_jump_deg": temporal_yaw_jump_deg,
                 "temporal_gate_valid": temporal_gate_valid,
                 "temporal_score": float(temporal_score),
+                "reliability_gate_features": gate_features.tolist(),
+                "reliability_gate_available_sources": [
+                    source for source in RELIABILITY_GATE_SOURCES if hypothesis_results[source] is not None
+                ],
+                "reliability_gate_probabilities": (
+                    reliability_gate_probabilities.tolist()
+                    if reliability_gate_probabilities is not None
+                    else None
+                ),
+                "reliability_gate_source_risks_m": (
+                    reliability_gate_source_risks_m.tolist()
+                    if reliability_gate_source_risks_m is not None
+                    else None
+                ),
+                "reliability_gate_selected_source": reliability_gate_selected_source,
+                "reliability_gate_predicted_improvement_m": reliability_gate_predicted_improvement_m,
+                "reliability_gate_applied": reliability_gate_applied,
                 "final_pose_4x4": icp_result.pose_4x4.tolist(),
             }
             candidate_result["final_score"] = float(
@@ -779,6 +1067,7 @@ class DeepFineLocalizer(FineLocalizer):
         previous_selected_patch_id: int | None = None,
         previous_selected_patch_deep_prob: float | None = None,
         previous_selected_init_source: str | None = None,
+        force_raw_geometry: bool = False,
     ) -> dict[str, object]:
         candidate_results, _ = self._build_frame_candidate_results(
             frame_idx=frame_idx,
@@ -791,7 +1080,35 @@ class DeepFineLocalizer(FineLocalizer):
             ),
             previous_selected_patch_deep_prob=previous_selected_patch_deep_prob,
             previous_selected_init_source=previous_selected_init_source,
+            apply_semantic_filter=not bool(force_raw_geometry),
         )
+        self._active_semantic_filter_accepted_candidate_count = 0
+        decision = self._semantic_filter_decision_cache.get(int(frame_idx))
+        if (
+            not bool(force_raw_geometry)
+            and bool(self.config.use_semantic_dual_geometry_gate)
+            and decision is not None
+            and decision.use_conservative_filter
+        ):
+            raw_candidate_results, _ = self._build_frame_candidate_results(
+                frame_idx=frame_idx,
+                predicted_pose_4x4=predicted_pose_4x4,
+                tracker_pose_init_4x4=tracker_pose_init_4x4,
+                tracker_selected_streak=int(tracker_selected_streak),
+                previous_selected_patch_streak=int(previous_selected_patch_streak),
+                previous_selected_patch_id=(
+                    None if previous_selected_patch_id is None else int(previous_selected_patch_id)
+                ),
+                previous_selected_patch_deep_prob=previous_selected_patch_deep_prob,
+                previous_selected_init_source=previous_selected_init_source,
+                apply_semantic_filter=False,
+            )
+            candidate_results, self._active_semantic_filter_accepted_candidate_count = (
+                self._merge_semantic_geometry_hypotheses(
+                    candidate_results,
+                    raw_candidate_results,
+                )
+            )
         candidate_results.sort(key=lambda item: float(item["final_score"]), reverse=True)
         best_candidate = candidate_results[0]
         gt_pose = self.sequence_dataset.ground_truth.poses_4x4[frame_idx]
@@ -805,6 +1122,10 @@ class DeepFineLocalizer(FineLocalizer):
             "timestamp": float(self.sequence_dataset.frame_index[frame_idx].timestamp),
             "semantic_occlusion_ratio": float(self._active_semantic_occlusion_ratio),
             "semantic_occlusion_ratio_source": str(self._active_semantic_occlusion_ratio_source),
+            **self._semantic_filter_metadata(frame_idx),
+            "semantic_filter_accepted_candidate_count": int(
+                getattr(self, "_active_semantic_filter_accepted_candidate_count", 0)
+            ),
             "best_patch_id": int(best_candidate["patch_id"]),
             "pred_pose_4x4": best_candidate["final_pose_4x4"],
             "predicted_pose_4x4_from_tracker": tracker_pose_init_4x4.tolist() if tracker_pose_init_4x4 is not None else None,
@@ -882,14 +1203,39 @@ def localize_sequence(
     resume: bool = True,
 ) -> dict[str, object]:
     localizer = DeepFineLocalizer(config)
+    if bool(localizer.config.use_multi_hypothesis_tracker):
+        return _localize_sequence_multi_hypothesis(
+            localizer,
+            frame_start=frame_start,
+            num_frames=num_frames,
+            frame_stride=frame_stride,
+            output_json=output_json,
+            save_every=save_every,
+        )
     last_frame = len(localizer.sequence_dataset) if num_frames is None else min(
         len(localizer.sequence_dataset),
         int(frame_start) + int(num_frames),
     )
     frame_indices = list(range(int(frame_start), last_frame, max(1, int(frame_stride))))
     output_path = str(output_json) if output_json is not None else localizer.config.output_json
+    resume_state_path = (
+        Path(f"{output_path}.resume_state.npz") if output_path is not None else None
+    )
     frame_results: list[dict[str, object]] = []
     accepted_poses: list[np.ndarray] = []
+    raw_tracker_results: list[dict[str, object]] = []
+    raw_tracker_poses: list[np.ndarray] = []
+    use_semantic_shadow_tracker = bool(localizer.config.use_semantic_shadow_tracker)
+
+    def write_resume_state() -> None:
+        if resume_state_path is None:
+            return
+        resume_state_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            resume_state_path,
+            frame_indices=np.asarray([item["frame_idx"] for item in frame_results], dtype=np.int64),
+            accepted_poses=np.asarray(accepted_poses, dtype=np.float64),
+        )
 
     def _current_tracker_selected_streak(accepted_frame_results: list[dict[str, object]]) -> int:
         streak = 0
@@ -951,22 +1297,43 @@ def localize_sequence(
                 ]
                 valid_results.sort(key=lambda item: int(item["frame_idx"]))
                 frame_results = valid_results
-                accepted_poses = [
-                    np.asarray(item["pred_pose_4x4"], dtype=np.float64)
-                    for item in valid_results
-                ]
+                accepted_poses = []
+                if resume_state_path is not None and resume_state_path.is_file():
+                    with np.load(resume_state_path) as state:
+                        state_indices = np.asarray(state["frame_indices"], dtype=np.int64)
+                        state_poses = np.asarray(state["accepted_poses"], dtype=np.float64)
+                    expected_indices = np.asarray(
+                        [item["frame_idx"] for item in valid_results],
+                        dtype=np.int64,
+                    )
+                    if (
+                        state_indices.shape == expected_indices.shape
+                        and np.array_equal(state_indices, expected_indices)
+                        and state_poses.shape == (len(valid_results), 4, 4)
+                    ):
+                        accepted_poses = [pose.copy() for pose in state_poses]
+                if not accepted_poses:
+                    accepted_poses = [
+                        np.asarray(item["pred_pose_4x4"], dtype=np.float64)
+                        for item in valid_results
+                    ]
                 start_offset = len(valid_results)
+                if use_semantic_shadow_tracker:
+                    raw_tracker_results = valid_results
+                    raw_tracker_poses = [pose.copy() for pose in accepted_poses]
     for list_idx, frame_idx in enumerate(frame_indices[start_offset:], start=start_offset):
-        temporal_prior_pose_4x4 = localizer._predict_motion_prior_4x4(accepted_poses)
+        tracker_poses = raw_tracker_poses if use_semantic_shadow_tracker else accepted_poses
+        tracker_results = raw_tracker_results if use_semantic_shadow_tracker else frame_results
+        temporal_prior_pose_4x4 = localizer._predict_motion_prior_4x4(tracker_poses)
         predicted_pose_4x4 = localizer._predict_pose_4x4(
-            accepted_poses,
-            accepted_frame_results=frame_results,
+            tracker_poses,
+            accepted_frame_results=tracker_results,
         )
-        tracker_selected_streak = _current_tracker_selected_streak(frame_results)
+        tracker_selected_streak = _current_tracker_selected_streak(tracker_results)
         previous_selected_patch_streak, previous_selected_patch_id, previous_selected_patch_deep_prob, previous_selected_init_source = (
-            _current_selected_patch_context(frame_results)
+            _current_selected_patch_context(tracker_results)
         )
-        frame_result = localizer.localize_frame(
+        raw_frame_result = localizer.localize_frame(
             frame_idx,
             predicted_pose_4x4=temporal_prior_pose_4x4,
             tracker_pose_init_4x4=predicted_pose_4x4,
@@ -975,12 +1342,86 @@ def localize_sequence(
             previous_selected_patch_id=previous_selected_patch_id,
             previous_selected_patch_deep_prob=previous_selected_patch_deep_prob,
             previous_selected_init_source=previous_selected_init_source,
+            force_raw_geometry=use_semantic_shadow_tracker,
         )
         if bool(localizer.config.apply_online_patch_hysteresis_during_tracking):
-            online_results = localizer._apply_online_patch_hysteresis(frame_results + [frame_result])
-            frame_result = online_results[-1]
+            online_results = localizer._apply_online_patch_hysteresis(tracker_results + [raw_frame_result])
+            raw_frame_result = online_results[-1]
+        frame_result = raw_frame_result
+        if use_semantic_shadow_tracker:
+            localizer._build_query_points(frame_idx)
+            decision = localizer._semantic_filter_decision_cache.get(int(frame_idx))
+            if decision is not None and decision.use_conservative_filter:
+                refinement = localizer._semantic_sidecar_refine_raw_winner(
+                    frame_idx,
+                    raw_frame_result,
+                )
+                if refinement is not None:
+                    frame_result = dict(raw_frame_result)
+                    semantic_pose = np.asarray(refinement.pose_4x4, dtype=np.float64)
+                    raw_pose = np.asarray(raw_frame_result["pred_pose_4x4"], dtype=np.float64)
+                    selected_candidate = raw_frame_result["candidate_results"][
+                        int(raw_frame_result["selected_candidate_index"])
+                    ]
+                    ground_truth_pose = localizer.sequence_dataset.ground_truth.poses_4x4[frame_idx]
+                    raw_position_error_m = float(
+                        np.linalg.norm(raw_pose[:2, 3] - ground_truth_pose[:2, 3])
+                    )
+                    raw_yaw_error_deg = abs(
+                        math.degrees(float(wrap_to_pi(
+                            yaw_from_pose_matrix(raw_pose) - yaw_from_pose_matrix(ground_truth_pose)
+                        )))
+                    )
+                    frame_result["pred_pose_4x4"] = semantic_pose.tolist()
+                    frame_result["position_error_m"] = float(
+                        np.linalg.norm(semantic_pose[:2, 3] - ground_truth_pose[:2, 3])
+                    )
+                    frame_result["yaw_error_deg"] = float(
+                        abs(math.degrees(float(wrap_to_pi(
+                            yaw_from_pose_matrix(semantic_pose)
+                            - yaw_from_pose_matrix(ground_truth_pose)
+                        ))))
+                    )
+                    frame_result["semantic_sidecar_applied"] = True
+                    frame_result["semantic_sidecar_pose_4x4"] = semantic_pose.tolist()
+                    frame_result["raw_tracker_position_error_m"] = raw_position_error_m
+                    frame_result["raw_tracker_yaw_error_deg"] = float(raw_yaw_error_deg)
+                    frame_result["semantic_sidecar_features"] = {
+                        "semi_dynamic_point_ratio": float(decision.semi_dynamic_point_ratio),
+                        "raw_icp_inlier_ratio": float(selected_candidate["icp_inlier_ratio"]),
+                        "raw_icp_rmse": float(selected_candidate["icp_rmse"]),
+                        "sidecar_icp_inlier_ratio": float(refinement.inlier_ratio),
+                        "sidecar_icp_rmse": float(refinement.rmse),
+                        "icp_inlier_ratio_gain": float(
+                            refinement.inlier_ratio - float(selected_candidate["icp_inlier_ratio"])
+                        ),
+                        "icp_rmse_gain": float(
+                            float(selected_candidate["icp_rmse"]) - refinement.rmse
+                        ),
+                        "pose_translation_delta_m": float(
+                            np.linalg.norm(semantic_pose[:2, 3] - raw_pose[:2, 3])
+                        ),
+                        "pose_yaw_delta_deg": float(
+                            abs(math.degrees(float(wrap_to_pi(
+                                yaw_from_pose_matrix(semantic_pose) - yaw_from_pose_matrix(raw_pose)
+                            ))))
+                        ),
+                        "raw_deep_match_probability": float(
+                            selected_candidate["deep_match_probability"]
+                        ),
+                        "raw_temporal_score": float(selected_candidate["temporal_score"]),
+                    }
+                    frame_result["semantic_filter_accepted_candidate_count"] = 1
+            frame_result.update(localizer._semantic_filter_metadata(frame_idx))
+            raw_tracker_results.append(raw_frame_result)
+            raw_tracker_poses.append(np.asarray(raw_frame_result["pred_pose_4x4"], dtype=np.float64))
         frame_results.append(frame_result)
-        accepted_poses.append(np.asarray(frame_result["pred_pose_4x4"], dtype=np.float64))
+        accepted_poses.append(
+            np.asarray(
+                raw_frame_result["pred_pose_4x4"] if use_semantic_shadow_tracker else frame_result["pred_pose_4x4"],
+                dtype=np.float64,
+            )
+        )
         if output_path is not None and int(save_every) > 0 and ((list_idx + 1) % int(save_every) == 0):
             partial_report = _build_localization_report(
                 frame_results,
@@ -990,6 +1431,7 @@ def localize_sequence(
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(partial_report, indent=2), encoding="utf-8")
+            write_resume_state()
     if not bool(localizer.config.apply_online_patch_hysteresis_during_tracking):
         frame_results = localizer._apply_online_patch_hysteresis(frame_results)
     frame_results = localizer._apply_persistent_patch_override(frame_results)
@@ -1001,6 +1443,243 @@ def localize_sequence(
     )
     if output_path is not None:
         path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_resume_state()
+    print(json.dumps(report, indent=2))
+    return report
+
+
+def _localize_sequence_multi_hypothesis(
+    localizer: DeepFineLocalizer,
+    *,
+    frame_start: int,
+    num_frames: int | None,
+    frame_stride: int,
+    output_json: str | Path | None,
+    save_every: int,
+) -> dict[str, object]:
+    """Causal beam tracker over independently refined candidate trajectories."""
+    if bool(localizer.config.use_semantic_shadow_tracker):
+        raise ValueError("Multi-hypothesis tracking is not compatible with semantic shadow tracking.")
+
+    last_frame = len(localizer.sequence_dataset) if num_frames is None else min(
+        len(localizer.sequence_dataset),
+        int(frame_start) + int(num_frames),
+    )
+    frame_indices = list(range(int(frame_start), last_frame, max(1, int(frame_stride))))
+    beam_size = max(1, int(localizer.config.multi_hypothesis_beam_size))
+    branch_factor = max(1, int(localizer.config.multi_hypothesis_branch_factor))
+    merge_distance_m = max(0.0, float(localizer.config.multi_hypothesis_pose_merge_distance_m))
+    states = [MultiHypothesisState(cumulative_score=0.0)]
+    online_results: list[dict[str, object]] = []
+
+    def selected_context(state: MultiHypothesisState) -> tuple[int, int | None, float | None, str | None, int]:
+        if not state.frame_results:
+            return 0, None, None, None, 0
+        last_result = state.frame_results[-1]
+        selected_idx = int(last_result["selected_candidate_index"])
+        candidates = list(last_result["candidate_results"])
+        if selected_idx < 0 or selected_idx >= len(candidates):
+            return 0, None, None, None, 0
+        selected = candidates[selected_idx]
+        patch_id = int(selected["patch_id"])
+        patch_streak = 0
+        tracker_streak = 0
+        for result in reversed(state.frame_results):
+            result_candidates = list(result["candidate_results"])
+            candidate = result_candidates[int(result["selected_candidate_index"])]
+            if int(candidate["patch_id"]) != patch_id:
+                break
+            patch_streak += 1
+            if candidate.get("selected_init_source") == "tracker_init":
+                tracker_streak += 1
+            else:
+                break
+        return (
+            patch_streak,
+            patch_id,
+            None if selected.get("deep_match_probability") is None else float(selected["deep_match_probability"]),
+            str(selected.get("selected_init_source") or ""),
+            tracker_streak,
+        )
+
+    def make_frame_result(
+        frame_idx: int,
+        candidates: list[dict[str, object]],
+        selected_index: int,
+        parent_rank: int,
+        cumulative_score: float,
+        pose_override: np.ndarray | None = None,
+    ) -> dict[str, object]:
+        selected = candidates[selected_index] if selected_index >= 0 else None
+        pose = (
+            np.asarray(pose_override, dtype=np.float64)
+            if pose_override is not None
+            else np.asarray(selected["final_pose_4x4"], dtype=np.float64)
+        )
+        ground_truth = localizer.sequence_dataset.ground_truth.poses_4x4[frame_idx]
+        return {
+            "frame_idx": int(frame_idx),
+            "timestamp": float(localizer.sequence_dataset.frame_index[frame_idx].timestamp),
+            "best_patch_id": int(selected["patch_id"]) if selected is not None else -1,
+            "pred_pose_4x4": pose.tolist(),
+            "position_error_m": float(np.linalg.norm(pose[:2, 3] - ground_truth[:2, 3])),
+            "yaw_error_deg": float(abs(math.degrees(float(wrap_to_pi(
+                yaw_from_pose_matrix(pose) - yaw_from_pose_matrix(ground_truth)
+            ))))),
+            "used_tracker_fallback": selected is None,
+            "selection_mode": "online_multi_hypothesis" if selected is not None else "online_multi_hypothesis_tracker_fallback",
+            "selected_candidate_index": int(selected_index),
+            "candidate_results": candidates,
+            "multi_hypothesis_parent_rank": int(parent_rank),
+            "multi_hypothesis_cumulative_score": float(cumulative_score),
+        }
+
+    for sequence_index, frame_idx in enumerate(frame_indices):
+        expanded_states: list[MultiHypothesisState] = []
+        for parent_rank, state in enumerate(states):
+            prior_pose = localizer._predict_motion_prior_4x4(state.poses)
+            tracker_pose = localizer._predict_pose_4x4(
+                state.poses,
+                accepted_frame_results=state.frame_results,
+            )
+            patch_streak, patch_id, deep_probability, init_source, tracker_streak = selected_context(state)
+            candidates, _ = localizer._build_frame_candidate_results(
+                frame_idx=frame_idx,
+                predicted_pose_4x4=prior_pose,
+                tracker_pose_init_4x4=tracker_pose,
+                tracker_selected_streak=tracker_streak,
+                previous_selected_patch_streak=patch_streak,
+                previous_selected_patch_id=patch_id,
+                previous_selected_patch_deep_prob=deep_probability,
+                previous_selected_init_source=init_source or None,
+            )
+            candidates.sort(key=lambda item: float(item["final_score"]), reverse=True)
+            selected_indices = list(range(min(branch_factor, len(candidates))))
+            branch_scores = {
+                candidate_idx: float(candidates[candidate_idx]["final_score"])
+                for candidate_idx in selected_indices
+            }
+            if prior_pose is not None and bool(localizer.config.use_online_pose_stabilizer):
+                admissible = [
+                    candidate_idx
+                    for candidate_idx, candidate in enumerate(candidates)
+                    if (
+                        (jump := localizer._candidate_jump_to_prediction(candidate, prior_pose))[0] is not None
+                        and jump[1] is not None
+                        and jump[0] <= float(localizer.config.online_stabilizer_max_position_jump_m)
+                        and jump[1] <= float(localizer.config.online_stabilizer_max_yaw_jump_deg)
+                    )
+                ]
+                if admissible:
+                    admissible.sort(
+                        key=lambda candidate_idx: localizer._online_stabilizer_candidate_score(
+                            candidates[candidate_idx], prior_pose
+                        ),
+                        reverse=True,
+                    )
+                    selected_indices = admissible[:branch_factor]
+                    branch_scores = {
+                        candidate_idx: localizer._online_stabilizer_candidate_score(
+                            candidates[candidate_idx], prior_pose
+                        )
+                        for candidate_idx in selected_indices
+                    }
+                elif (
+                    bool(localizer.config.online_stabilizer_fallback_to_tracker)
+                    and bool(localizer.config.multi_hypothesis_keep_reacquisition_branch)
+                ):
+                    fallback_score = float(
+                        max(float(candidate["final_score"]) for candidate in candidates)
+                    )
+                    fallback_result = make_frame_result(
+                        frame_idx,
+                        candidates,
+                        -1,
+                        parent_rank,
+                        state.cumulative_score + fallback_score,
+                        pose_override=prior_pose,
+                    )
+                    expanded_states.append(
+                        MultiHypothesisState(
+                            cumulative_score=float(state.cumulative_score + fallback_score),
+                            poses=state.poses + [np.asarray(prior_pose, dtype=np.float64)],
+                            frame_results=state.frame_results + [fallback_result],
+                        )
+                    )
+                elif bool(localizer.config.online_stabilizer_fallback_to_tracker):
+                    fallback_result = make_frame_result(
+                        frame_idx,
+                        candidates,
+                        -1,
+                        parent_rank,
+                        state.cumulative_score,
+                        pose_override=prior_pose,
+                    )
+                    expanded_states.append(
+                        MultiHypothesisState(
+                            cumulative_score=float(state.cumulative_score),
+                            poses=state.poses + [np.asarray(prior_pose, dtype=np.float64)],
+                            frame_results=state.frame_results + [fallback_result],
+                        )
+                    )
+                    continue
+            for selected_index in selected_indices:
+                selected = candidates[selected_index]
+                cumulative_score = float(state.cumulative_score + branch_scores[selected_index])
+                frame_result = make_frame_result(
+                    frame_idx,
+                    candidates,
+                    selected_index,
+                    parent_rank,
+                    cumulative_score,
+                )
+                expanded_states.append(
+                    MultiHypothesisState(
+                        cumulative_score=cumulative_score,
+                        poses=state.poses + [np.asarray(selected["final_pose_4x4"], dtype=np.float64)],
+                        frame_results=state.frame_results + [frame_result],
+                    )
+                )
+        states = select_diverse_hypotheses(
+            expanded_states,
+            beam_size=beam_size,
+            pose_merge_distance_m=merge_distance_m,
+        )
+        if not states:
+            raise RuntimeError("Multi-hypothesis tracker pruned every state.")
+        online_results.append(dict(states[0].frame_results[-1]))
+        if output_json is not None and int(save_every) > 0 and ((sequence_index + 1) % int(save_every) == 0):
+            partial = _build_localization_report(
+                online_results,
+                frame_start=frame_start,
+                frame_stride=frame_stride,
+            )
+            partial["multi_hypothesis"] = {
+                "beam_size": beam_size,
+                "branch_factor": branch_factor,
+                "pose_merge_distance_m": merge_distance_m,
+            }
+            path = Path(output_json)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(partial, indent=2), encoding="utf-8")
+
+    if bool(localizer.config.use_online_patch_hysteresis):
+        online_results = localizer._apply_online_patch_hysteresis(online_results)
+    report = _build_localization_report(
+        online_results,
+        frame_start=frame_start,
+        frame_stride=frame_stride,
+    )
+    report["multi_hypothesis"] = {
+        "beam_size": beam_size,
+        "branch_factor": branch_factor,
+        "pose_merge_distance_m": merge_distance_m,
+        "causal": True,
+    }
+    if output_json is not None:
+        path = Path(output_json)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

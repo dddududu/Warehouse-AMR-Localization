@@ -139,7 +139,7 @@ class CoarseRetrievalDataset(Dataset):
             rng = np.random.default_rng(seed=int(frame_seed) + 17)
             fallback_candidates = np.flatnonzero(np.arange(len(patch_metadata)) != gt_patch_id)
             if fallback_candidates.size == 0:
-                raise ValueError("No negative patch candidates are available for retrieval training.")
+                return np.empty((0,), dtype=np.int64)
             extra_ids = rng.choice(
                 fallback_candidates,
                 size=target_count - negative_ids.shape[0],

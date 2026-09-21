@@ -1,0 +1,30 @@
+output_dir: "outputs/target_motion_20260803/person_mask"
+model:
+  input_height: 180
+  input_width: 320
+  base_channels: 24
+training:
+  seed: 17
+  batch_size: 24
+  num_workers: 4
+  epochs: 6
+  learning_rate: 0.0005
+  weight_decay: 0.0001
+  positive_sample_repeat: 2
+  positive_weight: 12.0
+  dice_weight: 1.0
+  threshold: 0.5
+  device: "cuda"
+person_label: 13
+splits:
+  train:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_1/Aisle_CW_Run_1"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  validation:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+  blind_test:
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    - "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"

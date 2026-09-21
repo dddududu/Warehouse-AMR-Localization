@@ -26,6 +26,7 @@ class DeepFineMatcherTrainConfig:
     use_stereo_query_image: bool = True
     use_query_depth: bool = True
     use_stereo_geometry: bool = True
+    zero_query_bev: bool = False
     image_resize_hw: tuple[int, int] = (128, 192)
     depth_scale: float = 0.001
     depth_min_m: float = 0.1

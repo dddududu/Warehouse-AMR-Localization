@@ -282,7 +282,7 @@ Babin 等人系统比较了多种 ICP 离群点处理方式，指出可变裁剪
 ```powershell
 .\.venv\Scripts\python.exe experiments\aisle_dynamic_robustness_20260605\analyze_dynamic_spikes.py `
   --sequence-name Aisle_CCW `
-  --sequence-root "D:\TorWIC\TorWIC SLAM Dataset\Oct. 12, 2022\Aisle_CCW\Aisle_CCW" `
+  --sequence-root "<TORWIC_ROOT>\Oct. 12, 2022\Aisle_CCW\Aisle_CCW" `
   --result-json outputs\aisle_generic_20260521\fine_localization_oct12_aisle_ccw_generic_v14a_samepatchrelease_full.json `
   --output-json outputs\aisle_dynamic_robustness_20260605\aisle_ccw_dynamic_spikes.json `
   --output-csv outputs\aisle_dynamic_robustness_20260605\aisle_ccw_dynamic_spikes.csv

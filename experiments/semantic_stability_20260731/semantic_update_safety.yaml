@@ -1,0 +1,28 @@
+stability_map_path: "outputs/semantic_stability_20260731/experiment1/semantic_stability_map.npz"
+output_dir: "outputs/semantic_stability_20260731/experiment5"
+cell_size_m: 0.5
+frame_stride: 8
+min_current_frame_support: 3
+min_stability: 0.70
+min_map_evidence: 3
+crop:
+  x_min: -10.0
+  x_max: 10.0
+  y_min: -10.0
+  y_max: 10.0
+  z_min: 0.13
+  z_max: 4.73
+current_sequences:
+  - name: "Jun23_CCW_Run2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CCW_Run_2/Aisle_CCW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "Jun23_CW_Run2"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 23, 2022/Aisle_CW_Run_2/Aisle_CW_Run_2"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+future_sequences:
+  - name: "Oct12_Aisle_CCW"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CCW/Aisle_CCW"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"
+  - name: "Oct12_Aisle_CW"
+    sequence_root: "D:/TorWIC/TorWIC SLAM Dataset/Oct. 12, 2022/Aisle_CW/Aisle_CW"
+    calibration_path: "D:/TorWIC/TorWIC SLAM Dataset/Jun. 15, 2022/Aisle_CCW_Run_1/Aisle_CCW_Run_1/calibrations.txt"

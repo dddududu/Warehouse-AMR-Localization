@@ -24,7 +24,12 @@ from localization.config import load_fine_localization_config
 from localization.icp_refiner import pose_from_xy_yaw_z, refine_pose_with_icp
 from localization.submap_builder import build_local_submap
 from preprocess.bev_builder import BEVConfig
-from preprocess.dynamic_point_filter import filter_dynamic_points_by_semantics, semantic_label_ratio
+from preprocess.dynamic_point_filter import (
+    SemanticFilterDecision,
+    filter_dynamic_points_by_semantics,
+    filter_points_with_semidynamic_trigger,
+    semantic_label_ratio,
+)
 from preprocess.local_lidar_cropper import LocalCropConfig, crop_local_lidar_points
 from preprocess.map_patch_builder import PatchMetadata, build_or_load_patch_cache
 from retrieval.build_patch_database import build_patch_database
@@ -115,6 +120,8 @@ class FineLocalizer:
             resolution=self.coarse_cfg.bev_resolution,
         )
         self._semantic_occlusion_ratio_cache: dict[int, float] = {}
+        self._semantic_filter_decision_cache: dict[int, SemanticFilterDecision] = {}
+        self._raw_query_points_cache: dict[int, np.ndarray] = {}
 
     def _semantic_occlusion_ratio(self, frame_idx: int) -> float:
         cached = self._semantic_occlusion_ratio_cache.get(int(frame_idx))
@@ -129,24 +136,83 @@ class FineLocalizer:
         self._semantic_occlusion_ratio_cache[int(frame_idx)] = float(ratio)
         return float(ratio)
 
-    def _build_query_points(self, frame_idx: int) -> np.ndarray:
-        record = self.sequence_dataset.frame_index[frame_idx]
-        lidar_path = record.lidar_path
-        points = load_pcd_xyz(lidar_path)
-        points = crop_local_lidar_points(points, self.crop_config)
-        if self.config.use_semantic_dynamic_filter:
-            points, _ = filter_dynamic_points_by_semantics(
-                points,
-                calibration=self.sequence_dataset.calibration,
-                segmentation_left_path=record.segmentation_greyscale_left_path,
-                segmentation_right_path=record.segmentation_greyscale_right_path,
-                dynamic_labels=self.config.semantic_dynamic_labels,
-                dilation_px=self.config.semantic_dynamic_mask_dilation_px,
+    def _build_query_points(
+        self,
+        frame_idx: int,
+        *,
+        apply_semantic_filter: bool = True,
+    ) -> np.ndarray:
+        cached_points = self._raw_query_points_cache.get(int(frame_idx))
+        if cached_points is None:
+            record = self.sequence_dataset.frame_index[frame_idx]
+            cached_points = crop_local_lidar_points(
+                load_pcd_xyz(record.lidar_path),
+                self.crop_config,
             )
+            self._raw_query_points_cache[int(frame_idx)] = cached_points
+        if not apply_semantic_filter or not self.config.use_semantic_dynamic_filter:
+            return cached_points
+        record = self.sequence_dataset.frame_index[frame_idx]
+        points = cached_points
+        if self.config.use_semantic_dynamic_filter:
+            if self.config.use_semidynamic_filter_trigger:
+                points, decision = filter_points_with_semidynamic_trigger(
+                    points,
+                    calibration=self.sequence_dataset.calibration,
+                    segmentation_left_path=record.segmentation_greyscale_left_path,
+                    segmentation_right_path=record.segmentation_greyscale_right_path,
+                    dynamic_labels=self.config.semantic_dynamic_labels,
+                    semi_dynamic_labels=self.config.semantic_semi_dynamic_labels,
+                    semi_dynamic_ratio_threshold=self.config.semantic_semi_dynamic_ratio_threshold,
+                    dilation_px=self.config.semantic_dynamic_mask_dilation_px,
+                )
+                self._semantic_filter_decision_cache[int(frame_idx)] = decision
+                if (
+                    not decision.use_conservative_filter
+                    and not self.config.semantic_filter_apply_dynamic_filter_without_trigger
+                ):
+                    return cached_points
+            else:
+                points, _ = filter_dynamic_points_by_semantics(
+                    points,
+                    calibration=self.sequence_dataset.calibration,
+                    segmentation_left_path=record.segmentation_greyscale_left_path,
+                    segmentation_right_path=record.segmentation_greyscale_right_path,
+                    dynamic_labels=self.config.semantic_dynamic_labels,
+                    dilation_px=self.config.semantic_dynamic_mask_dilation_px,
+                )
         return points
 
+    def _semantic_filter_metadata(self, frame_idx: int) -> dict[str, object]:
+        decision = self._semantic_filter_decision_cache.get(int(frame_idx))
+        if decision is None:
+            return {
+                "semantic_filter_trigger_enabled": False,
+                "semantic_filter_applied": False,
+                "semantic_filter_conservative_enabled": False,
+                "semantic_filter_semi_dynamic_point_ratio": None,
+                "semantic_filter_labels": list(self.config.semantic_dynamic_labels),
+            }
+        return {
+            "semantic_filter_trigger_enabled": True,
+            "semantic_filter_applied": bool(
+                decision.use_conservative_filter
+                or self.config.semantic_filter_apply_dynamic_filter_without_trigger
+            ),
+            "semantic_filter_conservative_enabled": bool(decision.use_conservative_filter),
+            "semantic_filter_semi_dynamic_point_ratio": float(decision.semi_dynamic_point_ratio),
+            "semantic_filter_labels": (
+                [int(label) for label in decision.filtered_labels]
+                if (
+                    decision.use_conservative_filter
+                    or self.config.semantic_filter_apply_dynamic_filter_without_trigger
+                )
+                else []
+            ),
+        }
+
     def _retrieve_topk_candidates(self, frame_idx: int) -> list[dict[str, Any]]:
-        query_points = self._build_query_points(frame_idx)
+        query_points = self._build_query_points(frame_idx, apply_semantic_filter=False)
         from preprocess.bev_builder import points_to_bev
 
         query_bev = points_to_bev(query_points, self.query_bev_config)

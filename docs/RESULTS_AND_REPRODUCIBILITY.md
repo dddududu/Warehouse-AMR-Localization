@@ -49,7 +49,7 @@
 
 ## 数据来源与边界
 
-数据来自官方发布的 [Toronto Warehouse Incremental Change SLAM Dataset（TorWIC-SLAM）](https://github.com/Viky397/TorWICDataset)。官方说明中包含三维 LiDAR、左右 RGB-D 相机、标定文件、轨迹和语义分割结果；数据采集覆盖多次日期与仓库内的半静态变化。
+数据来自官方发布的 [Toronto Warehouse Incremental Change SLAM Dataset（TorWIC-SLAM）](https://github.com/Viky397/TorWICDataset)。该数据集覆盖 3 个采集日、4 个月跨度、3 类场景和 20 条轨迹，提供高精三维地图、左右 RGB-D 图像与深度、语义掩码、Ouster OS1-128 LiDAR、IMU、时间戳、真值轨迹及相机标定。完整的数据组成、官方要求的 POV-SLAM 引用和致谢见 [README 的 TorWIC-SLAM 引用与致谢](../README.md#torwic-slam-引用与致谢)。
 
 本仓库**不重新分发**以下内容：
 

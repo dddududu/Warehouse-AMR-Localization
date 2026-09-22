@@ -100,10 +100,37 @@ flowchart LR
 
 ## 数据来源与使用边界
 
-- **数据集**：Toronto Warehouse Incremental Change SLAM Dataset（TorWIC-SLAM），官方发布页：[Viky397/TorWICDataset](https://github.com/Viky397/TorWICDataset)。
-- **传感器**：双 Azure Kinect RGB-D 相机、Ouster OS1-128 三维 LiDAR，以及发布的标定与轨迹信息。
-- **本项目划分**：主要使用 Jun.15 构图/训练，Jun.23 构造跨日地图监督，Oct.12 作为 Aisle 盲测集。
-- **仓库不包含原始数据、预训练权重或本地运行输出**：请从数据集官方渠道下载，并遵守原数据集的许可与引用要求。原因与目录约定见 [数据与复现说明](docs/RESULTS_AND_REPRODUCIBILITY.md#数据来源与边界)。
+
+本项目使用 [Toronto Warehouse Incremental Change SLAM Dataset（TorWIC-SLAM）](https://github.com/Viky397/TorWICDataset)。这是在 Clearpath Robotics 仓库采集的跨日期定位数据：覆盖 **3 个采集日、4 个月跨度、3 类场景和 20 条轨迹**，每条轨迹按预定义路线以顺时针或逆时针方式穿行。它特别适合检验“地图不再完全静态”时的机器人定位能力。
+
+| 数据组成 | 官方文件/内容 | 在本项目中的作用 |
+| --- | --- | --- |
+| 高精三维地图 | `groundtruth_map.ply`，由 Leica MS60 全站仪扫描并拼接 | 构建地图块、生成候选区域和评估位姿误差 |
+| 双目彩色图像 | `image_left/`、`image_right/` | 提取跨模态外观与语义线索 |
+| 对齐深度图 | `depth_left/`、`depth_right/`，`uint16` 深度值需乘 `0.001` 转为米 | 支持相机几何与点云投影检查 |
+| 语义分割 | 左右目的彩色掩码与类别 ID 掩码 | 识别人员、推车等动态或半动态区域 |
+| 三维激光扫描 | `lidar/` 中的 Ouster OS1-128 点云 | 粗定位鸟瞰表示、几何配准和最终定位 |
+| 时间、惯性与真值 | 左右 IMU、`frame_times.txt`、`traj_gt.txt` | 帧间同步、训练监督和客观精度评估 |
+| 相机标定 | `calibrations.txt` | 将 LiDAR、左右相机和语义结果变换到统一坐标系 |
+
+本项目的主要实验划分为：**Jun.15** 用于构图与训练，**Jun.23** 用于构造跨日地图可靠性监督，**Oct.12 Aisle** 用作不参与调参的盲测集。官方语义掩码由模型推理生成，并非人工逐帧完美标注；因此这里将其作为辅助信息，并用点云几何和时序一致性共同约束最终定位。
+
+本仓库**不重新分发**原始点云、图像、深度图、语义图、标定、轨迹、训练权重或本地运行输出。请从官方渠道下载数据并遵守其许可与使用限制；目录约定和复现环境见 [数据与复现说明](docs/RESULTS_AND_REPRODUCIBILITY.md#数据来源与边界)。
+
+## TorWIC-SLAM 引用与致谢
+
+根据 TorWIC 官方仓库要求，若使用 TorWIC-SLAM 数据集或 POV-SLAM 相关材料，应引用下述论文：
+
+```bibtex
+@INPROCEEDINGS{QianChatrathPOVSLAM,
+  author={Qian, Jingxing and Chatrath, Veronica and Servos, James and Mavrinac, Aaron and Burgard, Wolfram and Waslander, Steven L. and Schoellig, Angela},
+  booktitle={2023 Robotics: Science and Systems (RSS)},
+  title={{POV-SLAM: Probabilistic Object-Level Variational SLAM}},
+  year={2023}
+}
+```
+
+感谢 TorWIC/POV-SLAM 数据集作者公开数据与说明；感谢 Vector Institute for Artificial Intelligence、NSERC Canadian Robotics Network（NCRN）对原始工作的支持，也感谢 Clearpath Robotics 提供仓库场地与机器人平台。本项目是基于公开数据集的独立实现，与上述机构及原作者不存在隶属或背书关系。
 
 ## 快速开始
 

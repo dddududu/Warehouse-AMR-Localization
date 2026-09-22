@@ -79,7 +79,7 @@ flowchart LR
   <img src="docs/assets/reliability_network.png" width="640" alt="局部地图可靠性预测网络示意图" />
 </p>
 
-## 我解决了什么工程问题
+## 解决了什么工程问题
 
 | 现实难点 | 处理方式 | 收获 |
 | --- | --- | --- |
